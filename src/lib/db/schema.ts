@@ -16,6 +16,8 @@ export interface Progress {
   lastReadAt: number
 }
 
+export type ColumnLayout = 'auto' | 'single' | 'double'
+
 export interface Theme {
   id: string
   name: string
@@ -24,7 +26,7 @@ export interface Theme {
   fontFamily: string
   fontSize: number
   lineHeight: number
-  margin: number
+  columns: ColumnLayout
   isPreset: boolean
 }
 

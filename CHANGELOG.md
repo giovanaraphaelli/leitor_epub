@@ -18,3 +18,15 @@ Registro de alterações relevantes do projeto: o que mudou e por quê. Ver regr
   - *Por quê*: preferência explícita da usuária por não usar oxlint.
 - **Regra de lint desligada em `src/components/ui/**`** (`react-refresh/only-export-components`).
   - *Por quê*: arquivos gerados pela CLI do shadcn exportam variantes (ex: `buttonVariants`) junto do componente — padrão da própria lib, não um problema real de fast-refresh.
+- **Validado o fluxo de leitura com um EPUB real** (livro de ~5MB, com capa e metadata completos): upload, extração de título/autor/capa, paginação e restauração de posição após reabrir o livro — tudo funcionou sem ajustes. Fase 1 do roadmap marcada como concluída no README, exceto o sumário (TOC), que ainda não foi implementado.
+  - *Por quê*: validar com um arquivo real antes de começar a Fase 2 (customização), para não construir sobre uma base de leitura com problemas.
+- **Painel de ajustes de leitura** (`src/components/reader/ReaderSettings.tsx`): colunas (1/2/auto via `rendition.spread()`), margem, tamanho de fonte e espaçamento entre linhas. Campo `columns` adicionado ao modelo de `Theme`.
+  - *Por quê*: pedido direto da usuária por controle de layout de leitura (colunas, margens), além do que já existia no modelo de tema.
+- **Margem aplicada como `padding` no container por fora do iframe do epub.js, não dentro do `<body>` do livro.**
+  - *Por quê*: o CSS do próprio EPUB pode sobrescrever padding aplicado via `rendition.themes.default()`, então a margem não tinha efeito visível de forma confiável.
+- **Removida uma chamada extra a `rendition.resize(null, null)`** que eu tinha adicionado para forçar recálculo de layout ao mudar a margem.
+  - *Por quê*: essa chamada força um `clear()` completo dos iframes renderizados seguido de um re-`display()` assíncrono — em teste chegou a travar a tela ("Cannot read properties of undefined (reading 'manager')" quando chamada incorretamente, e depois um travamento silencioso). Rastreei o código-fonte do epub.js e `rendition.spread(...)` (já usado para colunas) já chama `manager.updateLayout()` incondicionalmente a cada render, que remede a largura atual do container (via `clientWidth`) e reaplica o layout às views já renderizadas, sem precisar limpar e redesenhar tudo. Mais simples e sem o risco de corrida.
+- **Removida a opção de margem** (campo `margin` do `Theme`, slider no painel de ajustes, padding no container do leitor).
+  - *Por quê*: feedback direto da usuária — não gostou do resultado visual/comportamento. Fica só colunas, fonte e espaçamento entre linhas por enquanto; margem pode voltar depois com outra abordagem se fizer sentido.
+- **Corrigido o espaçamento entre linhas**, que não tinha efeito nenhum.
+  - *Por quê*: a regra era aplicada só em `body` — o CSS do próprio EPUB normalmente define `line-height` direto em `p`, `li` etc., e um valor direto no elemento sempre ganha do valor herdado do body, mesmo com `!important` no body (herança não compete em especificidade). Corrigido aplicando a regra direto nos seletores de texto (`p, li, blockquote, div, span, td`) em `src/pages/Reader.tsx`.

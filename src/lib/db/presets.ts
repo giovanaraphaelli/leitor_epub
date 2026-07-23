@@ -9,7 +9,7 @@ export const PRESET_THEMES: Theme[] = [
     fontFamily: 'Nunito',
     fontSize: 18,
     lineHeight: 1.6,
-    margin: 48,
+    columns: 'auto',
     isPreset: true,
   },
   {
@@ -20,7 +20,7 @@ export const PRESET_THEMES: Theme[] = [
     fontFamily: 'Nunito',
     fontSize: 18,
     lineHeight: 1.6,
-    margin: 48,
+    columns: 'auto',
     isPreset: true,
   },
   {
@@ -31,7 +31,7 @@ export const PRESET_THEMES: Theme[] = [
     fontFamily: 'Nunito',
     fontSize: 18,
     lineHeight: 1.6,
-    margin: 48,
+    columns: 'auto',
     isPreset: true,
   },
   {
@@ -42,7 +42,7 @@ export const PRESET_THEMES: Theme[] = [
     fontFamily: 'Quicksand',
     fontSize: 18,
     lineHeight: 1.7,
-    margin: 48,
+    columns: 'auto',
     isPreset: true,
   },
   {
@@ -53,7 +53,7 @@ export const PRESET_THEMES: Theme[] = [
     fontFamily: 'Comfortaa',
     fontSize: 18,
     lineHeight: 1.7,
-    margin: 48,
+    columns: 'auto',
     isPreset: true,
   },
   {
@@ -64,7 +64,7 @@ export const PRESET_THEMES: Theme[] = [
     fontFamily: 'Poppins',
     fontSize: 18,
     lineHeight: 1.7,
-    margin: 48,
+    columns: 'auto',
     isPreset: true,
   },
 ]

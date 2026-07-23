@@ -38,14 +38,16 @@ npm run dev
 ## Roadmap
 
 ### Fase 1 — MVP
-- [ ] Scaffold do projeto (Vite + React + TS + Tailwind + shadcn)
-- [ ] Upload e listagem de EPUBs na biblioteca
-- [ ] Leitura básica com epub.js (paginação, TOC)
-- [ ] Salvar e restaurar posição de leitura por livro
+- [x] Scaffold do projeto (Vite + React + TS + Tailwind + shadcn)
+- [x] Upload e listagem de EPUBs na biblioteca
+- [x] Leitura básica com epub.js (paginação)
+- [ ] Sumário (TOC) navegável
+- [x] Salvar e restaurar posição de leitura por livro
 
 ### Fase 2 — Customização
 - [ ] Painel de temas com paletas prontas
-- [ ] Editor livre (cor, fonte, tamanho, espaçamento, margens)
+- [x] Colunas, tamanho de fonte e espaçamento entre linhas
+- [ ] Editor livre de cor e fonte
 - [ ] Salvar temas customizados
 
 ### Fase 3 — Polimento

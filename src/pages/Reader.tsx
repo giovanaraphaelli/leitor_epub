@@ -6,6 +6,14 @@ import { Button } from '@/components/ui/button'
 import { getBook } from '@/lib/db/books'
 import { getProgress, saveProgress } from '@/lib/db/progress'
 import { useThemeStore } from '@/store/theme-store'
+import ReaderSettings from '@/components/reader/ReaderSettings'
+import type { ColumnLayout } from '@/lib/db/schema'
+
+const SPREAD_BY_COLUMNS: Record<ColumnLayout, { spread: string; minWidth: number }> = {
+  single: { spread: 'none', minWidth: 800 },
+  double: { spread: 'always', minWidth: 0 },
+  auto: { spread: 'auto', minWidth: 800 },
+}
 
 export default function Reader() {
   const { bookId } = useParams<{ bookId: string }>()
@@ -68,11 +76,19 @@ export default function Reader() {
         background: `${activeTheme.background} !important`,
         color: `${activeTheme.textColor} !important`,
         'font-family': `${activeTheme.fontFamily} !important`,
+      },
+      // The book's own stylesheet usually sets line-height directly on text
+      // elements (p, li, etc.), which wins over an inherited value from body
+      // regardless of !important — inheritance doesn't compete on specificity.
+      // Targeting the elements directly is what actually overrides it.
+      'p, li, blockquote, div, span, td': {
         'line-height': `${activeTheme.lineHeight} !important`,
-        padding: `0 ${activeTheme.margin}px !important`,
       },
     })
     rendition.themes.fontSize(`${activeTheme.fontSize}px`)
+
+    const { spread, minWidth } = SPREAD_BY_COLUMNS[activeTheme.columns]
+    rendition.spread(spread, minWidth)
   }, [activeTheme, loading])
 
   return (
@@ -81,6 +97,7 @@ export default function Reader() {
         <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
           <ArrowLeft />
         </Button>
+        <ReaderSettings />
       </header>
 
       <div className="relative flex-1 overflow-hidden">

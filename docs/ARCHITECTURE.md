@@ -34,7 +34,7 @@ Aplicação client-side (SPA), sem backend. Todo o estado persistente (arquivos 
 | fontFamily | string | fonte selecionada |
 | fontSize | number | tamanho da fonte (px/rem) |
 | lineHeight | number | espaçamento entre linhas |
-| margin | number | margem lateral de leitura |
+| columns | 'auto' \| 'single' \| 'double' | layout de colunas do texto |
 | isPreset | boolean | se é um tema padrão do app ou criado pelo usuário |
 
 ### `settings`
