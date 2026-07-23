@@ -16,6 +16,29 @@ const SPREAD_BY_COLUMNS: Record<ColumnLayout, { spread: string; minWidth: number
   auto: { spread: 'auto', minWidth: 800 },
 }
 
+// TOC hrefs are relative to the nav document that declares them (e.g.
+// "OEBPS/Text/ch1.html" when nav.xhtml sits at the archive root), but
+// rendition.display() only matches hrefs in the form the spine stores them:
+// relative to the OPF package's own folder (e.g. "Text/ch1.html" when the
+// OPF lives in "OEBPS/"). book.canonical() re-resolves against the *wrong*
+// base for this case and makes it worse (doubles the "OEBPS/" prefix), so
+// instead we strip leading path segments one at a time until one matches an
+// actual spine entry.
+function resolveTocHref(book: EpubBook, href: string): string {
+  const [path, fragment] = href.split('#')
+  const withFragment = (candidate: string) => (fragment ? `${candidate}#${fragment}` : candidate)
+
+  if (book.spine.get(path)) return href
+
+  const segments = path.split('/')
+  for (let i = 1; i < segments.length; i++) {
+    const candidate = segments.slice(i).join('/')
+    if (book.spine.get(candidate)) return withFragment(candidate)
+  }
+
+  return href
+}
+
 export default function Reader() {
   const { bookId } = useParams<{ bookId: string }>()
   const navigate = useNavigate()
@@ -111,7 +134,13 @@ export default function Reader() {
           <TableOfContents
             toc={toc}
             currentHref={currentHref}
-            onNavigate={(href) => renditionRef.current?.display(href)}
+            onNavigate={(href) => {
+              const book = bookRef.current
+              const rendition = renditionRef.current
+              if (book && rendition) {
+                rendition.display(resolveTocHref(book, href)).catch(console.error)
+              }
+            }}
           />
         </div>
         <ReaderSettings />
