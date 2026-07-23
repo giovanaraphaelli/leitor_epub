@@ -41,7 +41,7 @@ npm run dev
 - [x] Scaffold do projeto (Vite + React + TS + Tailwind + shadcn)
 - [x] Upload e listagem de EPUBs na biblioteca
 - [x] Leitura básica com epub.js (paginação)
-- [ ] Sumário (TOC) navegável
+- [x] Sumário (TOC) navegável
 - [x] Salvar e restaurar posição de leitura por livro
 
 ### Fase 2 — Customização

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import ePub, { type Book as EpubBook, type Rendition } from 'epubjs'
+import ePub, { type Book as EpubBook, type NavItem, type Rendition } from 'epubjs'
 import { ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getBook } from '@/lib/db/books'
 import { getProgress, saveProgress } from '@/lib/db/progress'
 import { useThemeStore } from '@/store/theme-store'
 import ReaderSettings from '@/components/reader/ReaderSettings'
+import TableOfContents from '@/components/reader/TableOfContents'
 import type { ColumnLayout } from '@/lib/db/schema'
 
 const SPREAD_BY_COLUMNS: Record<ColumnLayout, { spread: string; minWidth: number }> = {
@@ -22,6 +23,8 @@ export default function Reader() {
   const renditionRef = useRef<Rendition | null>(null)
   const bookRef = useRef<EpubBook | null>(null)
   const [loading, setLoading] = useState(true)
+  const [toc, setToc] = useState<NavItem[]>([])
+  const [currentHref, setCurrentHref] = useState<string>()
   const activeTheme = useThemeStore((s) => s.activeTheme)
 
   useEffect(() => {
@@ -46,14 +49,21 @@ export default function Reader() {
       const progress = await getProgress(bookId!)
       await rendition.display(progress?.cfi ?? undefined)
 
-      rendition.on('relocated', (location: { start: { cfi: string; percentage: number } }) => {
-        saveProgress({
-          bookId: bookId!,
-          cfi: location.start.cfi,
-          percentage: Math.round(location.start.percentage * 100),
-          lastReadAt: Date.now(),
-        })
-      })
+      rendition.on(
+        'relocated',
+        (location: { start: { cfi: string; href: string; percentage: number } }) => {
+          setCurrentHref(location.start.href)
+          saveProgress({
+            bookId: bookId!,
+            cfi: location.start.cfi,
+            percentage: Math.round(location.start.percentage * 100),
+            lastReadAt: Date.now(),
+          })
+        }
+      )
+
+      const navigation = await book.loaded.navigation
+      if (!cancelled) setToc(navigation.toc)
 
       if (!cancelled) setLoading(false)
     }
@@ -94,9 +104,16 @@ export default function Reader() {
   return (
     <div className="flex h-screen flex-col" style={{ background: activeTheme.background }}>
       <header className="flex items-center justify-between border-b px-4 py-2">
-        <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
-          <ArrowLeft />
-        </Button>
+        <div className="flex items-center">
+          <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
+            <ArrowLeft />
+          </Button>
+          <TableOfContents
+            toc={toc}
+            currentHref={currentHref}
+            onNavigate={(href) => renditionRef.current?.display(href)}
+          />
+        </div>
         <ReaderSettings />
       </header>
 
