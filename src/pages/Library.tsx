@@ -3,12 +3,14 @@ import { useNavigate } from 'react-router-dom'
 import { v4 as uuid } from 'uuid'
 import { Button } from '@/components/ui/button'
 import { listBooks, addBook } from '@/lib/db/books'
+import { listProgress } from '@/lib/db/progress'
 import { parseEpubMetadata } from '@/lib/epub/parse'
 import type { Book } from '@/lib/db/schema'
 import { useThemeStore } from '@/store/theme-store'
 
 export default function Library() {
   const [books, setBooks] = useState<Book[]>([])
+  const [progressByBook, setProgressByBook] = useState<Record<string, number>>({})
   const [importing, setImporting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
@@ -33,6 +35,11 @@ export default function Library() {
 
   useEffect(() => {
     listBooks().then(setBooks)
+    listProgress().then((progress) => {
+      setProgressByBook(
+        Object.fromEntries(progress.map((p) => [p.bookId, p.percentage]))
+      )
+    })
   }, [])
 
   async function handleFiles(files: FileList | null) {
@@ -80,31 +87,39 @@ export default function Library() {
           </p>
         ) : (
           <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-            {books.map((book) => (
-              <button
-                key={book.id}
-                onClick={() => navigate(`/read/${book.id}`)}
-                className="group flex flex-col gap-2 text-left"
-              >
-                <div className="aspect-2/3 w-full overflow-hidden rounded-lg border bg-muted">
-                  {book.coverBlob ? (
-                    <img
-                      src={URL.createObjectURL(book.coverBlob)}
-                      alt={book.title}
-                      className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center p-2 text-center text-sm text-muted-foreground">
-                      {book.title}
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <p className="truncate text-sm font-medium">{book.title}</p>
-                  <p className="truncate text-xs text-muted-foreground">{book.author}</p>
-                </div>
-              </button>
-            ))}
+            {books.map((book) => {
+              const percentage = progressByBook[book.id]
+              return (
+                <button
+                  key={book.id}
+                  onClick={() => navigate(`/read/${book.id}`)}
+                  className="group flex flex-col gap-2 text-left"
+                >
+                  <div className="relative aspect-2/3 w-full overflow-hidden rounded-lg border bg-muted">
+                    {book.coverBlob ? (
+                      <img
+                        src={URL.createObjectURL(book.coverBlob)}
+                        alt={book.title}
+                        className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                      />
+                    ) : (
+                      <div className="flex h-full items-center justify-center p-2 text-center text-sm text-muted-foreground">
+                        {book.title}
+                      </div>
+                    )}
+                    {!!percentage && (
+                      <span className="absolute top-2 right-2 rounded-full bg-black/70 px-2 py-0.5 text-xs font-medium text-white">
+                        {percentage}%
+                      </span>
+                    )}
+                  </div>
+                  <div>
+                    <p className="truncate text-sm font-medium">{book.title}</p>
+                    <p className="truncate text-xs text-muted-foreground">{book.author}</p>
+                  </div>
+                </button>
+              )
+            })}
           </div>
         )}
       </div>
