@@ -12,7 +12,7 @@ Leitor de EPUB pessoal, feito para rodar no navegador: você sobe seus próprios
   - Paletas prontas (rosa pastel, lavanda, menta, sépia, claro, escuro)
   - Colunas, tamanho de fonte e espaçamento entre linhas
   - Seletor de fonte com 8 opções (sans-serif e serifadas), com prévia no próprio painel
-  - Editor livre de cor de fundo e cor do texto
+  - Editor livre de cor de fundo e cor do texto, integrado à seção de paletas prontas
   - Temas customizados podem ser salvos e reutilizados
 
 ## Stack
@@ -50,7 +50,7 @@ npm run dev
 - [x] Painel de temas com paletas prontas
 - [x] Colunas, tamanho de fonte e espaçamento entre linhas
 - [x] Seletor de fonte (8 opções, com prévia)
-- [ ] Editor livre de cor
+- [x] Editor livre de cor
 - [ ] Salvar temas customizados
 
 ### Fase 3 — Polimento

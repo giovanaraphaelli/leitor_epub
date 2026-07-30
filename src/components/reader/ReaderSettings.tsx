@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { Settings2, Columns2, Square, LayoutGrid, Check } from "lucide-react";
+import { Settings2, Columns2, Square, LayoutGrid, Check, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
@@ -67,7 +67,7 @@ export default function ReaderSettings() {
         <div className="flex flex-col gap-6 px-4">
           <div className="flex flex-col gap-2">
             <Label>Paleta</Label>
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               {PRESET_THEMES.map((preset) => {
                 const isActive = activeTheme.id === preset.id;
                 return (
@@ -107,6 +107,60 @@ export default function ReaderSettings() {
                   </button>
                 );
               })}
+
+              {/* "+" creates a one-off custom palette seeded from whatever
+                  colors are currently active, then reveals the two pickers
+                  below to actually change them — same swatch slot doubles as
+                  the active-state indicator once selected, just like a
+                  preset. There's only ever one custom slot for now: saving
+                  several named custom palettes is a separate, not-yet-built
+                  roadmap item. */}
+              <button
+                type="button"
+                aria-label="Nova paleta personalizada"
+                title="Nova paleta personalizada"
+                onClick={() => {
+                  if (activeTheme.id !== "custom") {
+                    updateActiveTheme({ id: "custom", name: "Personalizado", isPreset: false });
+                  }
+                }}
+                className={cn(
+                  "flex size-9 cursor-pointer items-center justify-center rounded-full border transition-colors",
+                  activeTheme.id === "custom"
+                    ? "border-primary/80"
+                    : "border-dashed border-muted-foreground/50",
+                )}
+                style={activeTheme.id === "custom" ? { background: activeTheme.background } : undefined}
+              >
+                {activeTheme.id === "custom" ? (
+                  <Check className="size-4" style={{ color: activeTheme.textColor }} />
+                ) : (
+                  <Plus className="size-4 text-muted-foreground" />
+                )}
+              </button>
+
+              {activeTheme.id === "custom" && (
+                <>
+                  <label className="flex cursor-pointer flex-col items-center gap-1 text-xs text-muted-foreground">
+                    Fundo
+                    <input
+                      type="color"
+                      value={activeTheme.background}
+                      onChange={(e) => updateActiveTheme({ background: e.target.value })}
+                      className="size-9 cursor-pointer rounded-full border border-muted-foreground/50 bg-transparent p-0 [&::-moz-color-swatch]:rounded-full [&::-moz-color-swatch]:border-none [&::-webkit-color-swatch]:rounded-full [&::-webkit-color-swatch]:border-none [&::-webkit-color-swatch-wrapper]:rounded-full [&::-webkit-color-swatch-wrapper]:p-0"
+                    />
+                  </label>
+                  <label className="flex cursor-pointer flex-col items-center gap-1 text-xs text-muted-foreground">
+                    Texto
+                    <input
+                      type="color"
+                      value={activeTheme.textColor}
+                      onChange={(e) => updateActiveTheme({ textColor: e.target.value })}
+                      className="size-9 cursor-pointer rounded-full border border-muted-foreground/50 bg-transparent p-0 [&::-moz-color-swatch]:rounded-full [&::-moz-color-swatch]:border-none [&::-webkit-color-swatch]:rounded-full [&::-webkit-color-swatch]:border-none [&::-webkit-color-swatch-wrapper]:rounded-full [&::-webkit-color-swatch-wrapper]:p-0"
+                    />
+                  </label>
+                </>
+              )}
             </div>
           </div>
 
