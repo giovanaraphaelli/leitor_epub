@@ -44,6 +44,12 @@ export default function ReaderSettings() {
     "--muted-foreground": activeTheme.textColor,
     "--muted": `${activeTheme.textColor}1a`,
     "--primary": activeTheme.textColor,
+    // Select's dropdown items highlight with --accent/--accent-foreground on
+    // hover/focus, while the Colunas toggle group highlights its selected
+    // state with --muted/--foreground — mirroring those same values here
+    // keeps the two controls' highlight colors consistent with each other.
+    "--accent": `${activeTheme.textColor}1a`,
+    "--accent-foreground": activeTheme.textColor,
   } as CSSProperties;
 
   return (
