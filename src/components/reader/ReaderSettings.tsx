@@ -1,4 +1,4 @@
-import { Settings2, Columns2, Square, LayoutGrid } from 'lucide-react'
+import { Settings2, Columns2, Square, LayoutGrid, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
@@ -11,7 +11,9 @@ import {
   SheetTrigger,
 } from '@/components/ui/sheet'
 import { useThemeStore } from '@/store/theme-store'
+import { PRESET_THEMES } from '@/lib/db/presets'
 import type { ColumnLayout } from '@/lib/db/schema'
+import { cn } from '@/lib/utils'
 
 export default function ReaderSettings() {
   const activeTheme = useThemeStore((s) => s.activeTheme)
@@ -30,6 +32,40 @@ export default function ReaderSettings() {
         </SheetHeader>
 
         <div className="flex flex-col gap-6 px-4">
+          <div className="flex flex-col gap-2">
+            <Label>Paleta</Label>
+            <div className="flex flex-wrap gap-3">
+              {PRESET_THEMES.map((preset) => {
+                const isActive = activeTheme.id === preset.id
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    aria-label={preset.name}
+                    title={preset.name}
+                    onClick={() =>
+                      updateActiveTheme({
+                        id: preset.id,
+                        name: preset.name,
+                        background: preset.background,
+                        textColor: preset.textColor,
+                        fontFamily: preset.fontFamily,
+                        isPreset: preset.isPreset,
+                      })
+                    }
+                    className={cn(
+                      'flex size-9 items-center justify-center rounded-full border-2 transition-colors',
+                      isActive ? 'border-primary' : 'border-transparent hover:border-muted-foreground/30'
+                    )}
+                    style={{ background: preset.background }}
+                  >
+                    {isActive && <Check className="size-4" style={{ color: preset.textColor }} />}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
           <div className="flex flex-col gap-2">
             <Label>Colunas</Label>
             <ToggleGroup

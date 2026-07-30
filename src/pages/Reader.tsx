@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import ePub, { type Book as EpubBook, type NavItem, type Rendition } from 'epubjs'
+import ePub, { type Book as EpubBook, type Contents, type NavItem, type Rendition } from 'epubjs'
 import { ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getBook } from '@/lib/db/books'
@@ -9,6 +9,7 @@ import { useThemeStore } from '@/store/theme-store'
 import ReaderSettings from '@/components/reader/ReaderSettings'
 import TableOfContents from '@/components/reader/TableOfContents'
 import type { ColumnLayout } from '@/lib/db/schema'
+import readerFontsUrl from '@/styles/reader-fonts.css?url'
 
 const SPREAD_BY_COLUMNS: Record<ColumnLayout, { spread: string; minWidth: number }> = {
   single: { spread: 'none', minWidth: 800 },
@@ -69,6 +70,13 @@ export default function Reader() {
       })
       renditionRef.current = rendition
 
+      // The book's content renders in its own iframe document, which doesn't
+      // inherit stylesheets from the main page — the palette fonts need to be
+      // injected directly into each rendered section.
+      rendition.hooks.content.register((contents: Contents) => {
+        contents.addStylesheet(readerFontsUrl)
+      })
+
       const progress = await getProgress(bookId!)
       await rendition.display(progress?.cfi ?? undefined)
 
@@ -124,8 +132,24 @@ export default function Reader() {
     rendition.spread(spread, minWidth)
   }, [activeTheme, loading])
 
+  // Icons and text in the reader chrome use the `text-foreground` /
+  // `text-muted-foreground` / `hover:bg-muted` utilities, which read CSS
+  // variables — not the book's per-theme colors. Overriding those variables
+  // here (scoped to this subtree) makes the chrome follow the active theme
+  // instead of the app's global light/dark colors, which otherwise made
+  // icons unreadable (and hover backgrounds mismatched) against a dark theme.
+  // Presets only ever use 6-digit hex colors, so appending an alpha suffix
+  // for the hover background is safe.
+  const themeVars = {
+    background: activeTheme.background,
+    color: activeTheme.textColor,
+    '--foreground': activeTheme.textColor,
+    '--muted-foreground': activeTheme.textColor,
+    '--muted': `${activeTheme.textColor}1a`,
+  } as CSSProperties
+
   return (
-    <div className="flex h-screen flex-col" style={{ background: activeTheme.background }}>
+    <div className="flex h-screen flex-col" style={themeVars}>
       <header className="flex items-center justify-between border-b px-4 py-2">
         <div className="flex items-center">
           <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
@@ -157,14 +181,14 @@ export default function Reader() {
         <button
           aria-label="Página anterior"
           onClick={() => renditionRef.current?.prev()}
-          className="absolute inset-y-0 left-0 flex w-12 items-center justify-center text-muted-foreground hover:text-foreground"
+          className="absolute inset-y-0 left-0 flex w-12 items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100"
         >
           <ChevronLeft />
         </button>
         <button
           aria-label="Próxima página"
           onClick={() => renditionRef.current?.next()}
-          className="absolute inset-y-0 right-0 flex w-12 items-center justify-center text-muted-foreground hover:text-foreground"
+          className="absolute inset-y-0 right-0 flex w-12 items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100"
         >
           <ChevronRight />
         </button>

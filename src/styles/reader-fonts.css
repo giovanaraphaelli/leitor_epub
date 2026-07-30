@@ -1,0 +1,12 @@
+/* Fontes usadas pelas paletas de tema do leitor (src/lib/db/presets.ts).
+   Injetado dentro do iframe do epub.js via Contents.addStylesheet — o
+   conteúdo do livro roda num documento separado que não herda o CSS
+   da página principal. */
+@import '@fontsource/nunito/400.css';
+@import '@fontsource/nunito/700.css';
+@import '@fontsource/quicksand/400.css';
+@import '@fontsource/quicksand/700.css';
+@import '@fontsource/comfortaa/400.css';
+@import '@fontsource/comfortaa/700.css';
+@import '@fontsource/poppins/400.css';
+@import '@fontsource/poppins/700.css';

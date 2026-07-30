@@ -45,7 +45,7 @@ npm run dev
 - [x] Salvar e restaurar posição de leitura por livro
 
 ### Fase 2 — Customização
-- [ ] Painel de temas com paletas prontas
+- [x] Painel de temas com paletas prontas
 - [x] Colunas, tamanho de fonte e espaçamento entre linhas
 - [ ] Editor livre de cor e fonte
 - [ ] Salvar temas customizados
