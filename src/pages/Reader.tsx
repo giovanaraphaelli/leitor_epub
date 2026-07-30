@@ -127,6 +127,10 @@ export default function Reader() {
   const [activeTocId, setActiveTocId] = useState<string>()
   const [percentage, setPercentage] = useState<number>()
   const activeTheme = useThemeStore((s) => s.activeTheme)
+  // Tracks which (rendition, theme) pair has already been applied, so the
+  // live-update effect below can tell "loading just flipped to false" apart
+  // from "the theme actually changed" — see that effect's comment.
+  const appliedThemeRef = useRef<{ rendition: Rendition; theme: Theme } | null>(null)
 
   useEffect(() => {
     if (!bookId || !viewerRef.current) return
@@ -170,6 +174,7 @@ export default function Reader() {
       })
 
       applyTheme(rendition, activeTheme)
+      appliedThemeRef.current = { rendition, theme: activeTheme }
 
       const progress = await getProgress(bookId!)
       if (!cancelled) setPercentage(progress?.percentage)
@@ -265,10 +270,34 @@ export default function Reader() {
   // Handles live updates when the person changes the theme/settings panel
   // while already reading. The initial application (before the first
   // display()) happens inside the open() effect above.
+  //
+  // `loading` is in the dependency array so this can react as soon as a
+  // rendition becomes available, but that also means it re-runs the instant
+  // `loading` flips to false at the end of open() — with the *same* theme
+  // that was already applied there. Guarding on whether this exact
+  // (rendition, theme) pair was already applied skips that redundant call
+  // without missing a genuine change.
+  //
+  // For a genuine change, re-displaying at the CFI we were at right before
+  // reapplying is not optional: rendition.spread() unconditionally forces a
+  // layout recalculation (needed for real column/font-size/font-family
+  // changes), but epub.js's paginated manager recomputes page boundaries
+  // from scratch on that recalculation and doesn't reliably keep showing the
+  // same content — even a *palette-only* change (which touches no layout
+  // property at all) was observed moving the visible page. Re-displaying at
+  // the pre-reapply CFI re-settles on the exact same reading spot regardless
+  // of what actually changed, and — since display() re-fires 'relocated' —
+  // also re-saves progress at that same correct position instead of at
+  // wherever the relayout happened to land.
   useEffect(() => {
     const rendition = renditionRef.current
-    if (!rendition || loading) return
+    if (!rendition) return
+    const applied = appliedThemeRef.current
+    if (applied && applied.rendition === rendition && applied.theme === activeTheme) return
+    appliedThemeRef.current = { rendition, theme: activeTheme }
+    const cfi = rendition.location?.start?.cfi
     applyTheme(rendition, activeTheme)
+    if (cfi) rendition.display(cfi)
   }, [activeTheme, loading])
 
   // Icons and text in the reader chrome use the `text-foreground` /
