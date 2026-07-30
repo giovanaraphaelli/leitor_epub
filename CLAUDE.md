@@ -26,6 +26,7 @@ npm run preview  # preview do build de produção
 - Persistência: tudo passa pelos repositórios em `src/lib/db/` (`books.ts`, `progress.ts`, `themes.ts`) — não acessar `db.*` (Dexie) diretamente fora dessa camada.
 - Estado global (tema ativo, etc.) fica em `src/store/` (Zustand). Estado de UI local continua com `useState`/`useRef` nos próprios componentes.
 - Sem comentários explicando o óbvio — só quando houver uma razão não evidente (ex: por que uma versão de lib foi fixada).
+- Todo elemento clicável (botão, link, item de lista clicável, card usado como botão) leva `cursor-pointer` — `<button>` não tem isso por padrão no navegador. Estados desabilitados usam `cursor-not-allowed`. O componente base `Button` (`src/components/ui/button.tsx`) e `Toggle`/`ToggleGroupItem` já aplicam isso globalmente; elementos clicáveis feitos à mão (botão nativo, `<div role="button">`) precisam da classe explícita.
 
 ## Log de alterações
 

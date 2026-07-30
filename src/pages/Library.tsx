@@ -140,7 +140,7 @@ export default function Library() {
                         <AlertDialogTrigger asChild>
                           <button
                             aria-label={`Remover ${book.title}`}
-                            className="absolute top-2 left-2 flex size-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 transition-opacity hover:bg-black/90 group-hover:opacity-100"
+                            className="absolute top-2 left-2 flex size-7 cursor-pointer items-center justify-center rounded-full bg-black/70 text-white opacity-0 transition-opacity hover:bg-black/90 group-hover:opacity-100"
                           >
                             <Trash2 className="size-3.5" />
                           </button>

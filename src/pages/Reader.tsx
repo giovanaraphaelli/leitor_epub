@@ -270,14 +270,14 @@ export default function Reader() {
         <button
           aria-label="Página anterior"
           onClick={() => renditionRef.current?.prev()}
-          className="absolute inset-y-0 left-0 flex w-12 items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100"
+          className="absolute inset-y-0 left-0 flex w-12 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100"
         >
           <ChevronLeft />
         </button>
         <button
           aria-label="Próxima página"
           onClick={() => renditionRef.current?.next()}
-          className="absolute inset-y-0 right-0 flex w-12 items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100"
+          className="absolute inset-y-0 right-0 flex w-12 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100"
         >
           <ChevronRight />
         </button>

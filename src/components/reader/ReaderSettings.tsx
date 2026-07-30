@@ -54,7 +54,7 @@ export default function ReaderSettings() {
                       })
                     }
                     className={cn(
-                      'flex size-9 items-center justify-center rounded-full border-2 transition-colors',
+                      'flex size-9 cursor-pointer items-center justify-center rounded-full border-2 transition-colors',
                       isActive ? 'border-primary' : 'border-transparent hover:border-muted-foreground/30'
                     )}
                     style={{ background: preset.background }}

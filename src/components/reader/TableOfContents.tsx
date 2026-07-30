@@ -35,7 +35,7 @@ function TocList({
             <button
               onClick={() => onNavigate(item.href)}
               className={cn(
-                'w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted',
+                'w-full cursor-pointer rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted',
                 isActive && 'bg-muted font-medium text-foreground'
               )}
             >
