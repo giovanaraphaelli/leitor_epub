@@ -5,6 +5,13 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -13,8 +20,13 @@ import {
 } from "@/components/ui/sheet";
 import { useThemeStore } from "@/store/theme-store";
 import { PRESET_THEMES } from "@/lib/db/presets";
+import { FONT_OPTIONS } from "@/lib/db/fonts";
 import type { ColumnLayout } from "@/lib/db/schema";
 import { cn } from "@/lib/utils";
+// Plain import (not the `?url` one Reader.tsx uses to inject into the epub
+// iframe) so these fonts are also loaded for the previews below, which
+// render in the main document.
+import "@/styles/reader-fonts.css";
 
 export default function ReaderSettings() {
   const activeTheme = useThemeStore((s) => s.activeTheme);
@@ -90,6 +102,28 @@ export default function ReaderSettings() {
                 );
               })}
             </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label>Fonte</Label>
+            <Select
+              value={activeTheme.fontFamily}
+              onValueChange={(value) => updateActiveTheme({ fontFamily: value })}
+            >
+              <SelectTrigger className="w-full" style={{ fontFamily: activeTheme.fontFamily }}>
+                <SelectValue />
+              </SelectTrigger>
+              {/* Radix portals this to document.body, outside the sheet's own
+                  DOM subtree, so it needs the theme vars applied again — CSS
+                  custom properties don't cross a portal boundary. */}
+              <SelectContent style={themeVars}>
+                {FONT_OPTIONS.map((font) => (
+                  <SelectItem key={font.value} value={font.value} style={{ fontFamily: font.value }}>
+                    {font.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="flex flex-col gap-2">

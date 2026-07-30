@@ -10,7 +10,9 @@ Leitor de EPUB pessoal, feito para rodar no navegador: você sobe seus próprios
 - **Progresso salvo automaticamente** — volta exatamente de onde parou em cada livro
 - **Customização visual completa**:
   - Paletas prontas (rosa pastel, lavanda, menta, sépia, claro, escuro)
-  - Editor livre de cor de fundo, cor do texto, fonte, tamanho, espaçamento entre linhas e margens
+  - Colunas, tamanho de fonte e espaçamento entre linhas
+  - Seletor de fonte com 8 opções (sans-serif e serifadas), com prévia no próprio painel
+  - Editor livre de cor de fundo e cor do texto
   - Temas customizados podem ser salvos e reutilizados
 
 ## Stack
@@ -47,7 +49,8 @@ npm run dev
 ### Fase 2 — Customização
 - [x] Painel de temas com paletas prontas
 - [x] Colunas, tamanho de fonte e espaçamento entre linhas
-- [ ] Editor livre de cor e fonte
+- [x] Seletor de fonte (8 opções, com prévia)
+- [ ] Editor livre de cor
 - [ ] Salvar temas customizados
 
 ### Fase 3 — Polimento
