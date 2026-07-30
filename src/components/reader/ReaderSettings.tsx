@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import { Settings2, Columns2, Square, LayoutGrid, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -19,6 +20,16 @@ export default function ReaderSettings() {
   const activeTheme = useThemeStore((s) => s.activeTheme)
   const updateActiveTheme = useThemeStore((s) => s.updateActiveTheme)
 
+  // Sheet content renders through a portal to document.body, outside the
+  // reader's theme-scoped subtree — same reasoning as Reader.tsx's themeVars.
+  const themeVars = {
+    background: activeTheme.background,
+    color: activeTheme.textColor,
+    '--foreground': activeTheme.textColor,
+    '--muted-foreground': activeTheme.textColor,
+    '--muted': `${activeTheme.textColor}1a`,
+  } as CSSProperties
+
   return (
     <Sheet>
       <SheetTrigger asChild>
@@ -26,7 +37,7 @@ export default function ReaderSettings() {
           <Settings2 />
         </Button>
       </SheetTrigger>
-      <SheetContent>
+      <SheetContent style={themeVars}>
         <SheetHeader>
           <SheetTitle>Ajustes de leitura</SheetTitle>
         </SheetHeader>
@@ -54,8 +65,14 @@ export default function ReaderSettings() {
                       })
                     }
                     className={cn(
-                      'flex size-9 cursor-pointer items-center justify-center rounded-full border-2 transition-colors',
-                      isActive ? 'border-primary' : 'border-transparent hover:border-muted-foreground/30'
+                      'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors',
+                      // Pastel/white/near-black swatches can blend into a
+                      // similarly colored sheet background — a neutral
+                      // border keeps every swatch visible regardless of its
+                      // own color, not just the currently selected one.
+                      isActive
+                        ? 'border-2 border-primary'
+                        : 'border border-border hover:border-muted-foreground/50'
                     )}
                     style={{ background: preset.background }}
                   >

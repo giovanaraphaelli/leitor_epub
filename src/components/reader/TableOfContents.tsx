@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ListTree } from 'lucide-react'
+import { useState, type CSSProperties } from 'react'
+import { ListTree, BookOpen } from 'lucide-react'
 import type { NavItem } from 'epubjs'
 import { Button } from '@/components/ui/button'
 import {
@@ -10,40 +10,43 @@ import {
   SheetTrigger,
 } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
+import { useThemeStore } from '@/store/theme-store'
 
 interface TableOfContentsProps {
   toc: NavItem[]
-  currentHref?: string
+  activeTocId?: string
   onNavigate: (href: string) => void
 }
 
 function TocList({
   items,
-  currentHref,
+  activeTocId,
   onNavigate,
 }: {
   items: NavItem[]
-  currentHref?: string
+  activeTocId?: string
   onNavigate: (href: string) => void
 }) {
   return (
     <ul className="flex flex-col gap-1">
       {items.map((item) => {
-        const isActive = currentHref?.endsWith(item.href.split('#')[0])
+        const isActive = item.id === activeTocId
         return (
           <li key={item.id}>
             <button
               onClick={() => onNavigate(item.href)}
+              aria-current={isActive ? 'true' : undefined}
               className={cn(
-                'w-full cursor-pointer rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted',
-                isActive && 'bg-muted font-medium text-foreground'
+                'flex w-full cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted',
+                isActive && 'font-semibold'
               )}
             >
+              {isActive && <BookOpen className="size-3.5 shrink-0" />}
               {item.label.trim()}
             </button>
             {item.subitems && item.subitems.length > 0 && (
               <div className="ml-3 border-l pl-2">
-                <TocList items={item.subitems} currentHref={currentHref} onNavigate={onNavigate} />
+                <TocList items={item.subitems} activeTocId={activeTocId} onNavigate={onNavigate} />
               </div>
             )}
           </li>
@@ -53,13 +56,25 @@ function TocList({
   )
 }
 
-export default function TableOfContents({ toc, currentHref, onNavigate }: TableOfContentsProps) {
+export default function TableOfContents({ toc, activeTocId, onNavigate }: TableOfContentsProps) {
   const [open, setOpen] = useState(false)
+  const activeTheme = useThemeStore((s) => s.activeTheme)
 
   function handleNavigate(href: string) {
     onNavigate(href)
     setOpen(false)
   }
+
+  // Sheet/Dialog content renders through a portal to document.body, outside
+  // the reader's theme-scoped subtree — same reasoning as Reader.tsx's
+  // themeVars, needed again here since this doesn't inherit that override.
+  const themeVars = {
+    background: activeTheme.background,
+    color: activeTheme.textColor,
+    '--foreground': activeTheme.textColor,
+    '--muted-foreground': activeTheme.textColor,
+    '--muted': `${activeTheme.textColor}1a`,
+  } as CSSProperties
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -68,13 +83,13 @@ export default function TableOfContents({ toc, currentHref, onNavigate }: TableO
           <ListTree />
         </Button>
       </SheetTrigger>
-      <SheetContent side="left">
+      <SheetContent side="left" style={themeVars}>
         <SheetHeader>
           <SheetTitle>Sumário</SheetTitle>
         </SheetHeader>
 
         <div className="overflow-y-auto px-4">
-          <TocList items={toc} currentHref={currentHref} onNavigate={handleNavigate} />
+          <TocList items={toc} activeTocId={activeTocId} onNavigate={handleNavigate} />
         </div>
       </SheetContent>
     </Sheet>

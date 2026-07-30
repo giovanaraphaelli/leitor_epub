@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import ePub, { type Book as EpubBook, type Contents, type NavItem, type Rendition } from 'epubjs'
+import ePub, { EpubCFI, type Book as EpubBook, type Contents, type NavItem, type Rendition } from 'epubjs'
 import { ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getBook } from '@/lib/db/books'
@@ -40,6 +40,55 @@ function resolveTocHref(book: EpubBook, href: string): string {
   return href
 }
 
+function flattenNavItems(items: NavItem[]): NavItem[] {
+  return items.flatMap((item) => [item, ...(item.subitems ? flattenNavItems(item.subitems) : [])])
+}
+
+// Several TOC entries often share the same file (each pointing at a
+// different heading inside it via #fragment) — matching by file alone
+// highlights all of them at once. To pick just the one actually on screen,
+// compare each candidate's own position against the currently displayed
+// range using CFIs, which is what they're for — comparing pixel positions
+// doesn't work here: the iframe is sized to the *entire* flowed content
+// (tens of thousands of pixels wide for a whole chapter), not the current
+// page, so every heading's bounding rect looks "on screen". The last entry
+// at or before the current position is the active one; entries with no
+// fragment (representing the start of the file) always count as reached,
+// as a fallback before the first heading in the file.
+function computeActiveTocId(
+  rendition: Rendition,
+  book: EpubBook,
+  toc: NavItem[],
+  currentHref: string
+): string | undefined {
+  const location = rendition.location
+  const section = book.spine.get(currentHref)
+  if (!location || !section) return undefined
+
+  const contentsList = rendition.getContents() as unknown as Contents[]
+  const cfi = new EpubCFI()
+  const candidates = flattenNavItems(toc).filter(
+    (item) => resolveTocHref(book, item.href).split('#')[0] === currentHref
+  )
+
+  let activeId: string | undefined
+  for (const item of candidates) {
+    const fragment = item.href.split('#')[1]
+    if (!fragment) {
+      activeId = item.id
+      continue
+    }
+
+    const el = contentsList.map((c) => c.document?.getElementById(fragment)).find(Boolean)
+    if (!el) continue
+
+    const elCfi = section.cfiFromElement(el)
+    if (cfi.compare(elCfi, location.end.cfi) <= 0) activeId = item.id
+  }
+
+  return activeId
+}
+
 // Applied both before the very first display() (so the book paginates once,
 // with final settings, instead of laying out unstyled and then reflowing —
 // a reflow after display can shift which CFI is "currently displayed",
@@ -72,9 +121,10 @@ export default function Reader() {
   const viewerRef = useRef<HTMLDivElement>(null)
   const renditionRef = useRef<Rendition | null>(null)
   const bookRef = useRef<EpubBook | null>(null)
+  const tocRef = useRef<NavItem[]>([])
   const [loading, setLoading] = useState(true)
   const [toc, setToc] = useState<NavItem[]>([])
-  const [currentHref, setCurrentHref] = useState<string>()
+  const [activeTocId, setActiveTocId] = useState<string>()
   const [percentage, setPercentage] = useState<number>()
   const activeTheme = useThemeStore((s) => s.activeTheme)
 
@@ -150,7 +200,7 @@ export default function Reader() {
         (location: { start: { cfi: string; href: string } }) => {
           resolveFirstRelocation?.()
           resolveFirstRelocation = undefined
-          setCurrentHref(location.start.href)
+          setActiveTocId(computeActiveTocId(rendition, book, tocRef.current, location.start.href))
 
           const computedPercentage = percentageForCfi(location.start.cfi)
           const roundedPercentage = computedPercentage ?? (progress?.percentage ?? 0)
@@ -183,7 +233,12 @@ export default function Reader() {
       })
 
       const navigation = await book.loaded.navigation
-      if (!cancelled) setToc(navigation.toc)
+      tocRef.current = navigation.toc
+      if (!cancelled) {
+        setToc(navigation.toc)
+        const href = renditionRef.current?.location?.start?.href
+        if (href) setActiveTocId(computeActiveTocId(rendition, book, navigation.toc, href))
+      }
 
       if (!cancelled) setLoading(false)
     }
@@ -241,7 +296,7 @@ export default function Reader() {
           </Button>
           <TableOfContents
             toc={toc}
-            currentHref={currentHref}
+            activeTocId={activeTocId}
             onNavigate={(href) => {
               const book = bookRef.current
               const rendition = renditionRef.current
