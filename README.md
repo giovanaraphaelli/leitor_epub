@@ -13,18 +13,17 @@ Leitor de EPUB pessoal, feito para rodar no navegador: você sobe seus próprios
   - Colunas, tamanho de fonte e espaçamento entre linhas
   - Seletor de fonte com 8 opções (sans-serif e serifadas), com prévia no próprio painel
   - Editor livre de cor de fundo e cor do texto, integrado à seção de paletas prontas
-  - Temas customizados podem ser salvos e reutilizados
 
 ## Stack
 
-| Camada | Escolha |
-|---|---|
-| UI | React + TypeScript + Vite |
-| Estilo/componentes | Tailwind CSS + shadcn/ui |
-| Renderização EPUB | epub.js |
-| Persistência | IndexedDB via Dexie.js (100% local no navegador) |
-| Estado global | Zustand |
-| Roteamento | React Router |
+| Camada             | Escolha                                          |
+| ------------------ | ------------------------------------------------ |
+| UI                 | React + TypeScript + Vite                        |
+| Estilo/componentes | Tailwind CSS + shadcn/ui                         |
+| Renderização EPUB  | epub.js                                          |
+| Persistência       | IndexedDB via Dexie.js (100% local no navegador) |
+| Estado global      | Zustand                                          |
+| Roteamento         | React Router                                     |
 
 Não há backend: cada pessoa que usa o app tem seus livros e progresso guardados localmente no próprio navegador. Isso significa que os dados não sincronizam entre dispositivos diferentes, mas também que nenhum arquivo sai da máquina do usuário.
 
@@ -40,6 +39,7 @@ npm run dev
 ## Roadmap
 
 ### Fase 1 — MVP
+
 - [x] Scaffold do projeto (Vite + React + TS + Tailwind + shadcn)
 - [x] Upload e listagem de EPUBs na biblioteca
 - [x] Leitura básica com epub.js (paginação)
@@ -47,13 +47,14 @@ npm run dev
 - [x] Salvar e restaurar posição de leitura por livro
 
 ### Fase 2 — Customização
+
 - [x] Painel de temas com paletas prontas
 - [x] Colunas, tamanho de fonte e espaçamento entre linhas
 - [x] Seletor de fonte (8 opções, com prévia)
 - [x] Editor livre de cor
-- [ ] Salvar temas customizados
 
 ### Fase 3 — Polimento
+
 - [ ] Animações e transições suaves
 - [ ] Empty states e ilustrações
 - [ ] Responsividade mobile

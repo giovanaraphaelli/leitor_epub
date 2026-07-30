@@ -82,7 +82,6 @@ export default function ReaderSettings() {
                         name: preset.name,
                         background: preset.background,
                         textColor: preset.textColor,
-                        fontFamily: preset.fontFamily,
                         isPreset: preset.isPreset,
                       })
                     }

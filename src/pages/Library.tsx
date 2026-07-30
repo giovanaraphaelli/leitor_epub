@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { v4 as uuid } from 'uuid'
-import { Trash2 } from 'lucide-react'
+import { Trash2, Lock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -81,8 +81,8 @@ export default function Library() {
   }
 
   return (
-    <div className="min-h-screen" style={themeVars}>
-      <div className="mx-auto max-w-5xl px-6 py-10">
+    <div className="flex min-h-screen flex-col" style={themeVars}>
+      <div className="mx-auto w-full max-w-5xl flex-1 px-6 py-10">
         <div className="mb-8 flex items-center justify-between">
           <h1 className="text-2xl font-semibold">Minha biblioteca</h1>
           <Button onClick={() => fileInputRef.current?.click()} disabled={importing}>
@@ -173,6 +173,13 @@ export default function Library() {
           </div>
         )}
       </div>
+
+      <footer className="border-t px-6 py-4 text-center text-xs text-muted-foreground">
+        <p className="flex items-center justify-center gap-1.5">
+          <Lock className="size-3.5 shrink-0" />
+          Seus livros e seu progresso de leitura ficam guardados só aqui, no seu navegador — nada sai da sua máquina.
+        </p>
+      </footer>
     </div>
   )
 }

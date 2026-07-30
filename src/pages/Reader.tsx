@@ -115,6 +115,18 @@ function applyTheme(rendition: Rendition, theme: Theme) {
   rendition.spread(spread, minWidth)
 }
 
+// Skips page-turning when the key press originates inside the settings
+// sheet — Slider and ToggleGroup both use ArrowLeft/ArrowRight themselves
+// (to change a value or move focus between items), so turning the page at
+// the same time would fight the control being operated. This check is a
+// no-op for keydowns from inside the book's iframe (a separate document with
+// no sheet element in it), which is exactly where it should be a no-op.
+function handleArrowKeyNavigation(rendition: Rendition, event: KeyboardEvent) {
+  if (event.target instanceof Element && event.target.closest('[data-slot="sheet-content"]')) return
+  if (event.key === 'ArrowLeft') rendition.prev()
+  else if (event.key === 'ArrowRight') rendition.next()
+}
+
 export default function Reader() {
   const { bookId } = useParams<{ bookId: string }>()
   const navigate = useNavigate()
@@ -126,6 +138,7 @@ export default function Reader() {
   const [toc, setToc] = useState<NavItem[]>([])
   const [activeTocId, setActiveTocId] = useState<string>()
   const [percentage, setPercentage] = useState<number>()
+  const [bookTitle, setBookTitle] = useState<string>()
   const activeTheme = useThemeStore((s) => s.activeTheme)
   // Tracks which (rendition, theme) pair has already been applied, so the
   // live-update effect below can tell "loading just flipped to false" apart
@@ -139,6 +152,7 @@ export default function Reader() {
     async function open() {
       const record = await getBook(bookId!)
       if (!record || cancelled) return
+      setBookTitle(record.title)
 
       const arrayBuffer = await record.fileBlob.arrayBuffer()
       const book = ePub(arrayBuffer)
@@ -171,6 +185,12 @@ export default function Reader() {
       // injected directly into each rendered section.
       rendition.hooks.content.register((contents: Contents) => {
         contents.addStylesheet(readerFontsUrl)
+        // Keydown events inside the iframe never reach the main document's
+        // own listener (separate browsing context) — each rendered section
+        // needs its own.
+        contents.document.addEventListener('keydown', (e: KeyboardEvent) =>
+          handleArrowKeyNavigation(rendition, e)
+        )
       })
 
       applyTheme(rendition, activeTheme)
@@ -267,6 +287,17 @@ export default function Reader() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookId])
 
+  // Covers keydowns that land on the main document instead of the book's
+  // iframe — e.g. focus is on the header or nothing in particular.
+  useEffect(() => {
+    function handleKeydown(e: KeyboardEvent) {
+      const rendition = renditionRef.current
+      if (rendition) handleArrowKeyNavigation(rendition, e)
+    }
+    window.addEventListener('keydown', handleKeydown)
+    return () => window.removeEventListener('keydown', handleKeydown)
+  }, [])
+
   // Handles live updates when the person changes the theme/settings panel
   // while already reading. The initial application (before the first
   // display()) happens inside the open() effect above.
@@ -318,7 +349,7 @@ export default function Reader() {
 
   return (
     <div className="flex h-screen flex-col" style={themeVars}>
-      <header className="flex items-center justify-between border-b px-4 py-2">
+      <header className="relative flex items-center justify-between border-b px-4 py-2">
         <div className="flex items-center">
           <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
             <ArrowLeft />
@@ -335,6 +366,11 @@ export default function Reader() {
             }}
           />
         </div>
+        {bookTitle && (
+          <span className="absolute left-1/2 max-w-[50%] -translate-x-1/2 truncate text-sm font-medium">
+            {bookTitle}
+          </span>
+        )}
         <div className="flex items-center gap-3">
           {percentage !== undefined && (
             <span className="text-sm text-muted-foreground">{percentage}%</span>
