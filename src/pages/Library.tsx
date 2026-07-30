@@ -1,8 +1,20 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { v4 as uuid } from 'uuid'
+import { Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { listBooks, addBook } from '@/lib/db/books'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import { listBooks, addBook, removeBook } from '@/lib/db/books'
 import { listProgress } from '@/lib/db/progress'
 import { parseEpubMetadata } from '@/lib/epub/parse'
 import type { Book } from '@/lib/db/schema'
@@ -63,6 +75,11 @@ export default function Library() {
     setImporting(false)
   }
 
+  async function handleRemove(id: string) {
+    await removeBook(id)
+    setBooks(await listBooks())
+  }
+
   return (
     <div className="min-h-screen" style={themeVars}>
       <div className="mx-auto max-w-5xl px-6 py-10">
@@ -90,10 +107,15 @@ export default function Library() {
             {books.map((book) => {
               const percentage = progressByBook[book.id]
               return (
-                <button
+                <div
                   key={book.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => navigate(`/read/${book.id}`)}
-                  className="group flex flex-col gap-2 text-left"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') navigate(`/read/${book.id}`)
+                  }}
+                  className="group flex cursor-pointer flex-col gap-2 text-left"
                 >
                   <div className="relative aspect-2/3 w-full overflow-hidden rounded-lg border bg-muted">
                     {book.coverBlob ? (
@@ -112,12 +134,40 @@ export default function Library() {
                         {percentage}%
                       </span>
                     )}
+
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <button
+                            aria-label={`Remover ${book.title}`}
+                            className="absolute top-2 left-2 flex size-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 transition-opacity hover:bg-black/90 group-hover:opacity-100"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remover "{book.title}"?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              O arquivo e o progresso de leitura salvo serão removidos
+                              permanentemente. Essa ação não pode ser desfeita.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => handleRemove(book.id)}>
+                              Remover
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
                   </div>
                   <div>
                     <p className="truncate text-sm font-medium">{book.title}</p>
                     <p className="truncate text-xs text-muted-foreground">{book.author}</p>
                   </div>
-                </button>
+                </div>
               )
             })}
           </div>

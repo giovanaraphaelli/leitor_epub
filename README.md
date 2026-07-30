@@ -5,7 +5,7 @@ Leitor de EPUB pessoal, feito para rodar no navegador: você sobe seus próprios
 ## Funcionalidades
 
 - **Upload de EPUBs** — arraste ou selecione arquivos `.epub` para adicionar à sua biblioteca
-- **Biblioteca** — grade com capa, título e autor dos livros adicionados
+- **Biblioteca** — grade com capa, título e autor dos livros adicionados; remover livro com confirmação
 - **Leitura paginada** — navegação por capítulos, sumário (TOC), busca no texto
 - **Progresso salvo automaticamente** — volta exatamente de onde parou em cada livro
 - **Customização visual completa**:
