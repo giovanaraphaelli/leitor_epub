@@ -145,19 +145,34 @@ function handleArrowKeyNavigation(rendition: Rendition, event: KeyboardEvent) {
 
 const SWIPE_MIN_DISTANCE = 50
 
+// Set by the on-screen debug overlay (see TouchDebugOverlay) when the reader
+// is opened with ?debug in the URL. Exists because the one browser where the
+// gesture misbehaves — WebKit on iOS — can't be remote-inspected from this
+// machine, so the only way to observe it is to draw the trace on the device
+// itself instead of guessing at what the engine did.
+const touchDebug: { log?: (line: string) => void } = {}
+
 // Swiping is the only way to turn pages on a phone: the arrow buttons are
 // hidden below `sm` (they cost ~16% of the screen width there) and keyboard
 // shortcuts obviously don't apply. epub.js only ships swipe handling for its
 // `continuous` manager with `snap` enabled — this reader uses the `default`
 // manager — so the gesture is wired up by hand.
 //
-// Registered on both the book's iframe document and the main window, for the
-// same reason handleArrowKeyNavigation is: the iframe is a separate browsing
+// Registered on both the book's iframe and the main window, for the same
+// reason handleArrowKeyNavigation is: the iframe is a separate browsing
 // context, so a touch landing on the text never reaches a listener on the
 // parent document. Returns its own cleanup so callers can unregister.
+//
+// Inside the iframe the target must be `document.documentElement`, not
+// `document` — that's what epub.js's own documented swipe recipe uses, and
+// listeners on the iframe's document node were not producing page turns on
+// iOS. Registering on both would double-fire, since the event bubbles through
+// documentElement and then document, and each registration keeps its own
+// independent gesture state.
 function registerSwipeNavigation(
-  target: Document | Window,
-  getRendition: () => Rendition | null
+  target: EventTarget,
+  getRendition: () => Rendition | null,
+  label: string
 ) {
   let startX = 0
   let startY = 0
@@ -176,11 +191,13 @@ function registerSwipeNavigation(
       (origin instanceof Element && origin.closest('[data-slot="sheet-content"]'))
     ) {
       tracking = false
+      touchDebug.log?.(`${label} start IGNORADO (dedos=${touches.length})`)
       return
     }
     tracking = true
     startX = lastX = changedTouches[0].clientX
     startY = lastY = changedTouches[0].clientY
+    touchDebug.log?.(`${label} start x=${Math.round(startX)}`)
   }
 
   // The end of the gesture isn't always reported by touchend: WebKit fires
@@ -188,26 +205,41 @@ function registerSwipeNavigation(
   // to a native scroll, and it hands over no coordinates when it does. Keeping
   // the latest position from touchmove means the swipe can still be resolved
   // from whatever was last seen, instead of being dropped silently.
+  let moves = 0
+
   function onTouchMove(event: Event) {
     if (!tracking) return
     const touch = (event as TouchEvent).changedTouches[0]
     if (!touch) return
     lastX = touch.clientX
     lastY = touch.clientY
+    moves++
   }
 
-  function settle() {
-    if (!tracking) return
+  function settle(reason: string) {
+    if (!tracking) {
+      touchDebug.log?.(`${label} ${reason} sem gesto ativo`)
+      return
+    }
     tracking = false
-    const rendition = getRendition()
-    if (!rendition) return
 
     const deltaX = lastX - startX
     const deltaY = lastY - startY
+    const rendition = getRendition()
+    touchDebug.log?.(
+      `${label} ${reason} dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} moves=${moves} pronto=${!!rendition}`
+    )
+    moves = 0
+
+    if (!rendition) return
     // Require a deliberate, mostly-horizontal move so that a tap, a
     // long-press to select text, or a vertical drag doesn't turn the page.
-    if (Math.abs(deltaX) < SWIPE_MIN_DISTANCE || Math.abs(deltaX) <= Math.abs(deltaY)) return
+    if (Math.abs(deltaX) < SWIPE_MIN_DISTANCE || Math.abs(deltaX) <= Math.abs(deltaY)) {
+      touchDebug.log?.(`${label} descartado (curto ou vertical)`)
+      return
+    }
 
+    touchDebug.log?.(`${label} VIRANDO ${deltaX < 0 ? 'proxima' : 'anterior'}`)
     if (deltaX < 0) rendition.next()
     else rendition.prev()
   }
@@ -218,25 +250,74 @@ function registerSwipeNavigation(
       lastX = touch.clientX
       lastY = touch.clientY
     }
-    settle()
+    settle('end')
   }
+
+  const onTouchCancel = () => settle('cancel')
 
   target.addEventListener('touchstart', onTouchStart, { passive: true })
   target.addEventListener('touchmove', onTouchMove, { passive: true })
   target.addEventListener('touchend', onTouchEnd, { passive: true })
-  target.addEventListener('touchcancel', settle, { passive: true })
+  target.addEventListener('touchcancel', onTouchCancel, { passive: true })
+  touchDebug.log?.(`${label} listeners registrados`)
 
   return () => {
     target.removeEventListener('touchstart', onTouchStart)
     target.removeEventListener('touchmove', onTouchMove)
     target.removeEventListener('touchend', onTouchEnd)
-    target.removeEventListener('touchcancel', settle)
+    target.removeEventListener('touchcancel', onTouchCancel)
   }
+}
+
+// Draws the touch trace on the device, shown only when the reader is opened
+// with ?debug in the URL. iOS can't be remote-inspected from a Windows
+// machine, so without this the only feedback from the one engine that
+// misbehaves is "não virou" — which is what turned the last two rounds into
+// guesswork. Reports which listener fired, the resulting deltas, and the
+// computed touch-action inside the iframe, so the failure can be read off
+// the screen instead of inferred.
+function TouchDebugOverlay() {
+  const [lines, setLines] = useState<string[]>([])
+  const [env, setEnv] = useState('')
+
+  useEffect(() => {
+    touchDebug.log = (line) => setLines((prev) => [...prev.slice(-9), line])
+    return () => {
+      touchDebug.log = undefined
+    }
+  }, [])
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const iframe = document.querySelector('iframe')
+      const body = iframe?.contentDocument?.body
+      setEnv(
+        [
+          `iframe=${iframe ? 'sim' : 'nao'}`,
+          `touch-action=${body ? getComputedStyle(body).touchAction : '?'}`,
+          `rolagem=${document.documentElement.scrollHeight > window.innerHeight ? 'SIM' : 'nao'}`,
+        ].join(' · ')
+      )
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-50 max-h-[45%] overflow-hidden bg-black/85 p-2 font-mono text-[10px] leading-tight text-lime-300">
+      <div className="mb-1 text-white">{env}</div>
+      {lines.map((line, i) => (
+        <div key={i}>{line}</div>
+      ))}
+    </div>
+  )
 }
 
 export default function Reader() {
   const { bookId } = useParams<{ bookId: string }>()
   const navigate = useNavigate()
+  // Opt-in per visit (?debug), never on by default: this is a diagnostic for
+  // a device that can't be inspected any other way, not a feature.
+  const [debugTouch] = useState(() => new URLSearchParams(window.location.search).has('debug'))
   const viewerRef = useRef<HTMLDivElement>(null)
   const renditionRef = useRef<Rendition | null>(null)
   const bookRef = useRef<EpubBook | null>(null)
@@ -308,7 +389,11 @@ export default function Reader() {
         // Same reasoning for touch. No cleanup needed: epub.js tears down the
         // whole iframe document when it unrenders a section, taking its
         // listeners with it.
-        registerSwipeNavigation(contents.document, () => (canPageRef.current ? rendition : null))
+        registerSwipeNavigation(
+          contents.document.documentElement,
+          () => (canPageRef.current ? rendition : null),
+          'livro'
+        )
       })
 
       applyTheme(rendition, activeTheme)
@@ -424,7 +509,11 @@ export default function Reader() {
   // padding around it, or the header.
   useEffect(
     () =>
-      registerSwipeNavigation(window, () => (canPageRef.current ? renditionRef.current : null)),
+      registerSwipeNavigation(
+        window,
+        () => (canPageRef.current ? renditionRef.current : null),
+        'fora'
+      ),
     []
   )
 
@@ -531,6 +620,7 @@ export default function Reader() {
             Carregando livro...
           </div>
         )}
+        {debugTouch && <TouchDebugOverlay />}
 
         <button
           aria-label="Página anterior"
