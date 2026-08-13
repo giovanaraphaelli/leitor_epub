@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { v4 as uuid } from 'uuid'
-import { Trash2, Lock } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useNavigate } from "react-router-dom";
+import { v4 as uuid } from "uuid";
+import { Trash2, Lock } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,20 +13,22 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
-import { listBooks, addBook, removeBook } from '@/lib/db/books'
-import { listProgress } from '@/lib/db/progress'
-import { parseEpubMetadata } from '@/lib/epub/parse'
-import type { Book } from '@/lib/db/schema'
-import { useThemeStore } from '@/store/theme-store'
+} from "@/components/ui/alert-dialog";
+import { listBooks, addBook, removeBook } from "@/lib/db/books";
+import { listProgress } from "@/lib/db/progress";
+import { parseEpubMetadata } from "@/lib/epub/parse";
+import type { Book } from "@/lib/db/schema";
+import { useThemeStore } from "@/store/theme-store";
 
 export default function Library() {
-  const [books, setBooks] = useState<Book[]>([])
-  const [progressByBook, setProgressByBook] = useState<Record<string, number>>({})
-  const [importing, setImporting] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const navigate = useNavigate()
-  const activeTheme = useThemeStore((s) => s.activeTheme)
+  const [books, setBooks] = useState<Book[]>([]);
+  const [progressByBook, setProgressByBook] = useState<Record<string, number>>(
+    {},
+  );
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
+  const activeTheme = useThemeStore((s) => s.activeTheme);
 
   // Same reasoning as Reader.tsx: text-foreground/text-muted-foreground/
   // hover:bg-muted read CSS variables, so overriding them here makes the
@@ -38,28 +40,28 @@ export default function Library() {
   const themeVars = {
     background: activeTheme.background,
     color: activeTheme.textColor,
-    '--foreground': activeTheme.textColor,
-    '--muted-foreground': activeTheme.textColor,
-    '--muted': `${activeTheme.textColor}1a`,
-    '--primary': activeTheme.textColor,
-    '--primary-foreground': activeTheme.background,
-  } as CSSProperties
+    "--foreground": activeTheme.textColor,
+    "--muted-foreground": activeTheme.textColor,
+    "--muted": `${activeTheme.textColor}1a`,
+    "--primary": activeTheme.textColor,
+    "--primary-foreground": activeTheme.background,
+  } as CSSProperties;
 
   useEffect(() => {
-    listBooks().then(setBooks)
+    listBooks().then(setBooks);
     listProgress().then((progress) => {
       setProgressByBook(
-        Object.fromEntries(progress.map((p) => [p.bookId, p.percentage]))
-      )
-    })
-  }, [])
+        Object.fromEntries(progress.map((p) => [p.bookId, p.percentage])),
+      );
+    });
+  }, []);
 
   async function handleFiles(files: FileList | null) {
-    if (!files || files.length === 0) return
-    setImporting(true)
+    if (!files || files.length === 0) return;
+    setImporting(true);
 
     for (const file of Array.from(files)) {
-      const metadata = await parseEpubMetadata(file)
+      const metadata = await parseEpubMetadata(file);
       const book: Book = {
         id: uuid(),
         title: metadata.title,
@@ -67,26 +69,29 @@ export default function Library() {
         coverBlob: metadata.coverBlob,
         fileBlob: file,
         addedAt: Date.now(),
-      }
-      await addBook(book)
+      };
+      await addBook(book);
     }
 
-    setBooks(await listBooks())
-    setImporting(false)
+    setBooks(await listBooks());
+    setImporting(false);
   }
 
   async function handleRemove(id: string) {
-    await removeBook(id)
-    setBooks(await listBooks())
+    await removeBook(id);
+    setBooks(await listBooks());
   }
 
   return (
     <div className="flex min-h-screen flex-col" style={themeVars}>
       <div className="mx-auto w-full max-w-5xl flex-1 px-6 py-10">
-        <div className="mb-8 flex items-center justify-between">
+        <div className="mb-8 flex gap-3 flex-row items-center justify-between">
           <h1 className="text-2xl font-semibold">Minha biblioteca</h1>
-          <Button onClick={() => fileInputRef.current?.click()} disabled={importing}>
-            {importing ? 'Importando...' : 'Adicionar EPUB'}
+          <Button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+          >
+            {importing ? "Importando..." : "Adicionar EPUB"}
           </Button>
           <input
             ref={fileInputRef}
@@ -105,7 +110,7 @@ export default function Library() {
         ) : (
           <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
             {books.map((book) => {
-              const percentage = progressByBook[book.id]
+              const percentage = progressByBook[book.id];
               return (
                 <div
                   key={book.id}
@@ -113,7 +118,7 @@ export default function Library() {
                   tabIndex={0}
                   onClick={() => navigate(`/read/${book.id}`)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') navigate(`/read/${book.id}`)
+                    if (e.key === "Enter") navigate(`/read/${book.id}`);
                   }}
                   className="group flex cursor-pointer flex-col gap-2 text-left"
                 >
@@ -140,22 +145,27 @@ export default function Library() {
                         <AlertDialogTrigger asChild>
                           <button
                             aria-label={`Remover ${book.title}`}
-                            className="absolute top-2 left-2 flex size-7 cursor-pointer items-center justify-center rounded-full bg-black/70 text-white opacity-0 transition-opacity hover:bg-black/90 group-hover:opacity-100"
+                            className="absolute top-2 left-2 flex size-7 cursor-pointer items-center justify-center rounded-full bg-black/70 text-white hover:bg-black/90"
                           >
                             <Trash2 className="size-3.5" />
                           </button>
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>
-                            <AlertDialogTitle>Remover "{book.title}"?</AlertDialogTitle>
+                            <AlertDialogTitle>
+                              Remover "{book.title}"?
+                            </AlertDialogTitle>
                             <AlertDialogDescription>
-                              O arquivo e o progresso de leitura salvo serão removidos
-                              permanentemente. Essa ação não pode ser desfeita.
+                              O arquivo e o progresso de leitura salvo serão
+                              removidos permanentemente. Essa ação não pode ser
+                              desfeita.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
                             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                            <AlertDialogAction onClick={() => handleRemove(book.id)}>
+                            <AlertDialogAction
+                              onClick={() => handleRemove(book.id)}
+                            >
                               Remover
                             </AlertDialogAction>
                           </AlertDialogFooter>
@@ -165,10 +175,12 @@ export default function Library() {
                   </div>
                   <div>
                     <p className="truncate text-sm font-medium">{book.title}</p>
-                    <p className="truncate text-xs text-muted-foreground">{book.author}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {book.author}
+                    </p>
                   </div>
                 </div>
-              )
+              );
             })}
           </div>
         )}
@@ -177,9 +189,10 @@ export default function Library() {
       <footer className="border-t px-6 py-4 text-center text-xs text-muted-foreground">
         <p className="flex items-center justify-center gap-1.5">
           <Lock className="size-3.5 shrink-0" />
-          Seus livros e seu progresso de leitura ficam guardados só aqui, no seu navegador — nada sai da sua máquina.
+          Seus livros e seu progresso de leitura ficam guardados só aqui, no seu
+          navegador — nada sai da sua máquina.
         </p>
       </footer>
     </div>
-  )
+  );
 }
