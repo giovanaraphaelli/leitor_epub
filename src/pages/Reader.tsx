@@ -106,12 +106,16 @@ function applyTheme(rendition: Rendition, theme: Theme) {
       'font-family': `${theme.fontFamily} !important`,
       // The paginated content is laid out in columns far wider than the
       // iframe, which makes the iframe document horizontally scrollable — so
-      // WebKit claims a horizontal drag as a native scroll, starts scrolling
-      // the columns, and fires touchcancel instead of touchend. That silently
-      // swallowed the swipe on iOS. Declaring touch-action hands pans to our
-      // handler instead; `pinch-zoom` keeps zooming the text available, which
-      // `none` would have taken away.
-      'touch-action': 'pinch-zoom !important',
+      // WebKit claims a horizontal drag as a native scroll and fires
+      // touchcancel instead of touchend, swallowing the swipe on iOS.
+      //
+      // Deliberately `none` and not `pinch-zoom`: an unsupported value makes
+      // the browser drop the whole declaration, leaving touch-action at `auto`
+      // and the gesture hijacked exactly as before. `none` is the value with
+      // unambiguous WebKit support, so it's the one that can be relied on
+      // here. The cost is losing pinch-zoom inside the book — the font size
+      // control in the settings panel covers that need.
+      'touch-action': 'none !important',
     },
     // The book's own stylesheet usually sets line-height directly on text
     // elements (p, li, etc.), which wins over an inherited value from body
