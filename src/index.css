@@ -4,6 +4,13 @@
 @import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));
+/* Tailwind v4 gates `hover:` behind `@media (hover: hover)` by default (avoids
+   "sticky hover" after a tap on touch devices) — but some desktop/hybrid setups
+   report `hover: none` even with a real mouse attached, which silently kills
+   every hover highlight in the app. Reverting to a plain `:hover` restores the
+   old, reliable behavior. Nothing is *hidden* behind hover anymore (hover only
+   adjusts highlights), so touch devices lose nothing either way. */
+@custom-variant hover (&:hover);
 
 @theme inline {
     --font-heading: var(--font-sans);
