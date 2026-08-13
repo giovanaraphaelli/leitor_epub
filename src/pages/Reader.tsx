@@ -104,18 +104,6 @@ function applyTheme(rendition: Rendition, theme: Theme) {
       background: `${theme.background} !important`,
       color: `${theme.textColor} !important`,
       'font-family': `${theme.fontFamily} !important`,
-      // The paginated content is laid out in columns far wider than the
-      // iframe, which makes the iframe document horizontally scrollable — so
-      // WebKit claims a horizontal drag as a native scroll and fires
-      // touchcancel instead of touchend, swallowing the swipe on iOS.
-      //
-      // Deliberately `none` and not `pinch-zoom`: an unsupported value makes
-      // the browser drop the whole declaration, leaving touch-action at `auto`
-      // and the gesture hijacked exactly as before. `none` is the value with
-      // unambiguous WebKit support, so it's the one that can be relied on
-      // here. The cost is losing pinch-zoom inside the book — the font size
-      // control in the settings panel covers that need.
-      'touch-action': 'none !important',
     },
     // The book's own stylesheet usually sets line-height directly on text
     // elements (p, li, etc.), which wins over an inherited value from body
@@ -144,6 +132,9 @@ function handleArrowKeyNavigation(rendition: Rendition, event: KeyboardEvent) {
 }
 
 const SWIPE_MIN_DISTANCE = 50
+// Anything that moves less than this in both axes is a tap, not a swipe that
+// fell short — the gesture surface forwards those to the book (see onTap).
+const TAP_MAX_DISTANCE = 10
 
 // Set by the on-screen debug overlay (see TouchDebugOverlay) when the reader
 // is opened with ?debug in the URL. Exists because the one browser where the
@@ -158,43 +149,51 @@ const touchDebug: { log?: (line: string) => void } = {}
 // `continuous` manager with `snap` enabled — this reader uses the `default`
 // manager — so the gesture is wired up by hand.
 //
-// Registered on both the book's iframe and the main window, for the same
-// reason handleArrowKeyNavigation is: the iframe is a separate browsing
-// context, so a touch landing on the text never reaches a listener on the
-// parent document. Returns its own cleanup so callers can unregister.
-//
-// Inside the iframe the target must be `document.documentElement`, not
-// `document` — that's what epub.js's own documented swipe recipe uses, and
-// listeners on the iframe's document node were not producing page turns on
-// iOS. Registering on both would double-fire, since the event bubbles through
+// The primary target is a transparent surface laid over the book *in this
+// document* (see the JSX), not the book's iframe. Listening inside the iframe
+// is the obvious approach (and what epub.js's own swipe recipe does), but three
+// attempts at it never turned a page on iOS, so the gesture was moved out of
+// the iframe to the one place where nothing about the environment is in doubt:
+//   - nothing in this document scrolls (the reader is h-dvh/overflow-hidden and
+//     epub.js's own container is overflow:hidden), so WebKit has no native pan
+//     to claim mid-gesture and cancel the swipe for;
+//   - the surface declares its own touch-action, rather than depending on a
+//     rule injected into a document epub.js also styles and re-styles;
+//   - no second browsing context in the path, and no iframe viewport meta —
+//     epub.js writes one declaring a width far narrower than the iframe it
+//     renders into, and engines disagree about what to do with that.
+// The in-iframe registration stays as a fallback for input setups where the
+// surface isn't mounted at all (see isTouchDevice); the two never both fire,
+// since a mounted surface is what receives the touch instead of the iframe.
+// There it has to target `document.documentElement` rather than `document`:
+// registering on both would double-fire, since the event bubbles through
 // documentElement and then document, and each registration keeps its own
 // independent gesture state.
+//
+// Returns its own cleanup so callers can unregister.
 function registerSwipeNavigation(
   target: EventTarget,
   getRendition: () => Rendition | null,
-  label: string
+  label: string,
+  onTap?: (clientX: number, clientY: number) => void
 ) {
   let startX = 0
   let startY = 0
   let lastX = 0
   let lastY = 0
   let tracking = false
+  let moves = 0
 
   function onTouchStart(event: Event) {
-    const { touches, changedTouches, target: origin } = event as TouchEvent
-    // Ignore pinch-zoom, and anything starting inside the settings sheet —
-    // its Slider is dragged horizontally, which would otherwise read as a
-    // page turn on top of the value change (same conflict the keyboard
-    // handler above guards against).
-    if (
-      touches.length !== 1 ||
-      (origin instanceof Element && origin.closest('[data-slot="sheet-content"]'))
-    ) {
+    const { touches, changedTouches } = event as TouchEvent
+    // A second finger means a pinch, not a page turn.
+    if (touches.length !== 1) {
       tracking = false
       touchDebug.log?.(`${label} start IGNORADO (dedos=${touches.length})`)
       return
     }
     tracking = true
+    moves = 0
     startX = lastX = changedTouches[0].clientX
     startY = lastY = changedTouches[0].clientY
     touchDebug.log?.(`${label} start x=${Math.round(startX)}`)
@@ -205,8 +204,6 @@ function registerSwipeNavigation(
   // to a native scroll, and it hands over no coordinates when it does. Keeping
   // the latest position from touchmove means the swipe can still be resolved
   // from whatever was last seen, instead of being dropped silently.
-  let moves = 0
-
   function onTouchMove(event: Event) {
     if (!tracking) return
     const touch = (event as TouchEvent).changedTouches[0]
@@ -229,11 +226,20 @@ function registerSwipeNavigation(
     touchDebug.log?.(
       `${label} ${reason} dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} moves=${moves} pronto=${!!rendition}`
     )
-    moves = 0
+
+    if (
+      reason === 'end' &&
+      Math.abs(deltaX) < TAP_MAX_DISTANCE &&
+      Math.abs(deltaY) < TAP_MAX_DISTANCE
+    ) {
+      touchDebug.log?.(`${label} toque simples`)
+      onTap?.(lastX, lastY)
+      return
+    }
 
     if (!rendition) return
-    // Require a deliberate, mostly-horizontal move so that a tap, a
-    // long-press to select text, or a vertical drag doesn't turn the page.
+    // Require a deliberate, mostly-horizontal move so that a long-press to
+    // select text or a vertical drag doesn't turn the page.
     if (Math.abs(deltaX) < SWIPE_MIN_DISTANCE || Math.abs(deltaX) <= Math.abs(deltaY)) {
       touchDebug.log?.(`${label} descartado (curto ou vertical)`)
       return
@@ -269,6 +275,32 @@ function registerSwipeNavigation(
   }
 }
 
+// A tap can't reach a link inside the book while the gesture surface is over
+// it — the surface is what receives the touch. epub.js assigns its own onclick
+// to every internal link when it renders a section (replaceLinks in its
+// source), so re-dispatching the click on whatever sits under the finger is
+// enough to keep footnote and cross-reference links working.
+function forwardTapToLink(viewer: HTMLElement, clientX: number, clientY: number) {
+  for (const iframe of viewer.querySelectorAll<HTMLIFrameElement>('iframe')) {
+    const doc = iframe.contentDocument
+    if (!doc) continue
+    // The iframe is as wide as the whole chapter and slides left as pages
+    // turn, so it's its own rect — not the viewer's — that maps a point on
+    // screen to a point in the document inside it.
+    const { left, top } = iframe.getBoundingClientRect()
+    // Typed via the generic instead of an `instanceof HTMLElement` check: the
+    // element comes from the iframe's realm, so it's an instance of *that*
+    // document's HTMLElement and the check would always be false here.
+    const link = doc
+      .elementFromPoint(clientX - left, clientY - top)
+      ?.closest<HTMLAnchorElement>('a[href]')
+    if (link) {
+      link.click()
+      return
+    }
+  }
+}
+
 // Draws the touch trace on the device, shown only when the reader is opened
 // with ?debug in the URL. iOS can't be remote-inspected from a Windows
 // machine, so without this the only feedback from the one engine that
@@ -289,12 +321,11 @@ function TouchDebugOverlay() {
 
   useEffect(() => {
     const timer = setInterval(() => {
-      const iframe = document.querySelector('iframe')
-      const body = iframe?.contentDocument?.body
+      const surface = document.querySelector('[data-swipe-surface]')
       setEnv(
         [
-          `iframe=${iframe ? 'sim' : 'nao'}`,
-          `touch-action=${body ? getComputedStyle(body).touchAction : '?'}`,
+          `iframe=${document.querySelector('iframe') ? 'sim' : 'nao'}`,
+          `superficie=${surface ? getComputedStyle(surface).touchAction : 'NAO'}`,
           `rolagem=${document.documentElement.scrollHeight > window.innerHeight ? 'SIM' : 'nao'}`,
         ].join(' · ')
       )
@@ -318,7 +349,14 @@ export default function Reader() {
   // Opt-in per visit (?debug), never on by default: this is a diagnostic for
   // a device that can't be inspected any other way, not a feature.
   const [debugTouch] = useState(() => new URLSearchParams(window.location.search).has('debug'))
+  // The surface only goes up where touch is the primary input: it sits on top
+  // of the book, so it also swallows text selection and, with a mouse, would
+  // swallow every click. `pointer: coarse` is the query for "the main pointer
+  // is a finger" — a laptop with both a touchscreen and a trackpad reports
+  // `fine`, and keeps mouse behaviour exactly as it is today.
+  const [isTouchDevice] = useState(() => window.matchMedia('(pointer: coarse)').matches)
   const viewerRef = useRef<HTMLDivElement>(null)
+  const swipeSurfaceRef = useRef<HTMLDivElement>(null)
   const renditionRef = useRef<Rendition | null>(null)
   const bookRef = useRef<EpubBook | null>(null)
   const tocRef = useRef<NavItem[]>([])
@@ -432,6 +470,11 @@ export default function Reader() {
 
           const computedPercentage = percentageForCfi(location.start.cfi)
           const roundedPercentage = computedPercentage ?? (progress?.percentage ?? 0)
+          // Tells the two possible failures apart on a device that can't be
+          // inspected: a gesture that never fired logs nothing, while a
+          // gesture that fired without the page moving logs the swipe and no
+          // relocation after it.
+          touchDebug.log?.(`relocated ${roundedPercentage}%`)
           if (computedPercentage !== undefined) setPercentage(roundedPercentage)
           saveProgress({
             bookId: bookId!,
@@ -505,17 +548,19 @@ export default function Reader() {
     return () => window.removeEventListener('keydown', handleKeydown)
   }, [])
 
-  // Same coverage for swipes that land outside the book's iframe — the
-  // padding around it, or the header.
-  useEffect(
-    () =>
-      registerSwipeNavigation(
-        window,
-        () => (canPageRef.current ? renditionRef.current : null),
-        'fora'
-      ),
-    []
-  )
+  // The gesture surface over the book is where swipes are actually handled —
+  // see registerSwipeNavigation for why it isn't the book's iframe.
+  useEffect(() => {
+    const surface = swipeSurfaceRef.current
+    const viewer = viewerRef.current
+    if (!surface || !viewer) return
+    return registerSwipeNavigation(
+      surface,
+      () => (canPageRef.current ? renditionRef.current : null),
+      'superficie',
+      (clientX, clientY) => forwardTapToLink(viewer, clientX, clientY)
+    )
+  }, [])
 
   // Handles live updates when the person changes the theme/settings panel
   // while already reading. The initial application (before the first
@@ -635,8 +680,24 @@ export default function Reader() {
             epub.js: epub.js measures that element to size its columns, and
             clientWidth counts padding, so padding applied directly to it makes
             it lay out wider than the space it actually occupies. */}
-        <div className="min-w-0 flex-1 px-2 py-2 sm:px-3 sm:py-4">
+        <div className="relative min-w-0 flex-1 px-2 py-2 sm:px-3 sm:py-4">
           <div ref={viewerRef} className="h-full w-full" />
+          {/* Gesture surface: transparent, covers the book, and is a sibling
+              *after* the viewer so it paints over the iframe without needing a
+              z-index. It deliberately stops at the book — laying it over the
+              whole row would cover the arrow buttons on a touch tablet.
+              touch-none is what stops WebKit from claiming a horizontal drag
+              as a native pan and cancelling the gesture; nothing here scrolls,
+              so no scrolling is lost. Pinch-zoom over the book is, and the
+              font size control in the settings panel covers that need. */}
+          {isTouchDevice && (
+            <div
+              ref={swipeSurfaceRef}
+              data-swipe-surface
+              aria-hidden
+              className="absolute inset-0 touch-none"
+            />
+          )}
         </div>
 
         <button
