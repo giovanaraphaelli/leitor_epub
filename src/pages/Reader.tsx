@@ -104,6 +104,14 @@ function applyTheme(rendition: Rendition, theme: Theme) {
       background: `${theme.background} !important`,
       color: `${theme.textColor} !important`,
       'font-family': `${theme.fontFamily} !important`,
+      // The paginated content is laid out in columns far wider than the
+      // iframe, which makes the iframe document horizontally scrollable — so
+      // WebKit claims a horizontal drag as a native scroll, starts scrolling
+      // the columns, and fires touchcancel instead of touchend. That silently
+      // swallowed the swipe on iOS. Declaring touch-action hands pans to our
+      // handler instead; `pinch-zoom` keeps zooming the text available, which
+      // `none` would have taken away.
+      'touch-action': 'pinch-zoom !important',
     },
     // The book's own stylesheet usually sets line-height directly on text
     // elements (p, li, etc.), which wins over an inherited value from body
@@ -149,6 +157,8 @@ function registerSwipeNavigation(
 ) {
   let startX = 0
   let startY = 0
+  let lastX = 0
+  let lastY = 0
   let tracking = false
 
   function onTouchStart(event: Event) {
@@ -165,19 +175,31 @@ function registerSwipeNavigation(
       return
     }
     tracking = true
-    startX = changedTouches[0].clientX
-    startY = changedTouches[0].clientY
+    startX = lastX = changedTouches[0].clientX
+    startY = lastY = changedTouches[0].clientY
   }
 
-  function onTouchEnd(event: Event) {
+  // The end of the gesture isn't always reported by touchend: WebKit fires
+  // touchcancel instead whenever it decides mid-gesture that the touch belongs
+  // to a native scroll, and it hands over no coordinates when it does. Keeping
+  // the latest position from touchmove means the swipe can still be resolved
+  // from whatever was last seen, instead of being dropped silently.
+  function onTouchMove(event: Event) {
+    if (!tracking) return
+    const touch = (event as TouchEvent).changedTouches[0]
+    if (!touch) return
+    lastX = touch.clientX
+    lastY = touch.clientY
+  }
+
+  function settle() {
     if (!tracking) return
     tracking = false
     const rendition = getRendition()
     if (!rendition) return
 
-    const touch = (event as TouchEvent).changedTouches[0]
-    const deltaX = touch.clientX - startX
-    const deltaY = touch.clientY - startY
+    const deltaX = lastX - startX
+    const deltaY = lastY - startY
     // Require a deliberate, mostly-horizontal move so that a tap, a
     // long-press to select text, or a vertical drag doesn't turn the page.
     if (Math.abs(deltaX) < SWIPE_MIN_DISTANCE || Math.abs(deltaX) <= Math.abs(deltaY)) return
@@ -186,12 +208,25 @@ function registerSwipeNavigation(
     else rendition.prev()
   }
 
+  function onTouchEnd(event: Event) {
+    const touch = (event as TouchEvent).changedTouches?.[0]
+    if (tracking && touch) {
+      lastX = touch.clientX
+      lastY = touch.clientY
+    }
+    settle()
+  }
+
   target.addEventListener('touchstart', onTouchStart, { passive: true })
+  target.addEventListener('touchmove', onTouchMove, { passive: true })
   target.addEventListener('touchend', onTouchEnd, { passive: true })
+  target.addEventListener('touchcancel', settle, { passive: true })
 
   return () => {
     target.removeEventListener('touchstart', onTouchStart)
+    target.removeEventListener('touchmove', onTouchMove)
     target.removeEventListener('touchend', onTouchEnd)
+    target.removeEventListener('touchcancel', settle)
   }
 }
 
@@ -439,7 +474,14 @@ export default function Reader() {
   } as CSSProperties
 
   return (
-    <div className="flex h-screen flex-col" style={themeVars}>
+    // h-dvh, not h-screen: 100vh on iOS measures the viewport as if the
+    // browser's toolbars were hidden, so the reader ended up taller than the
+    // space actually visible and the whole page scrolled. The dynamic unit
+    // tracks the real visible height as those bars come and go.
+    // overflow-hidden/overscroll-none then stop any residual scroll or bounce,
+    // which matters beyond looks: a scrollable page lets WebKit treat a swipe
+    // as a native scroll and cancel the gesture before it reaches the handler.
+    <div className="flex h-dvh flex-col overflow-hidden overscroll-none" style={themeVars}>
       {/* grid (not the earlier absolute-centered title) so the center column
           actually shrinks to make room for the side groups — a long title
           plus the percentage badge could otherwise overlap on narrow phone
