@@ -13,11 +13,25 @@ React + TypeScript + Vite · Tailwind CSS v4 + shadcn/ui (base Radix) · epub.js
 ## Comandos
 
 ```bash
-npm run dev      # servidor de desenvolvimento
-npm run build    # type-check (tsc -b) + build de produção
-npm run lint      # eslint .
-npm run preview  # preview do build de produção
+npm run dev            # servidor de desenvolvimento
+npm run build          # type-check (tsc -b) + build de produção
+npm run lint           # eslint .
+npm run preview        # preview do build de produção
+npm run epub:generate  # regera fixtures/livro-de-teste.epub
+npm run epub:validate  # valida o fixture (aceita outro caminho como argumento)
 ```
+
+## Arquivo de teste
+
+`fixtures/livro-de-teste.epub` é um EPUB gerado por `scripts/generate-test-epub.mjs`
+para testar o leitor sem depender de um livro real: 8 capítulos, capa PNG, sumário
+aninhado com âncoras e texto acentuado. O arquivo é versionado (não precisa gerar
+para usar) e a geração é determinística — regerar sem mudar o script produz bytes
+idênticos, então não polui o histórico. `scripts/validate-epub.mjs` confere a
+estrutura (posição/compressão do `mimetype`, integridade de manifest/spine, e se
+cada âncora do sumário existe no capítulo de destino) e sai com código diferente
+de zero quando acha problema. Os scripts não têm dependências próprias: o JSZip
+vem junto do epub.js.
 
 ## Convenções de código
 
