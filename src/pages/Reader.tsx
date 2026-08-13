@@ -11,9 +11,13 @@ import TableOfContents from '@/components/reader/TableOfContents'
 import type { ColumnLayout, Theme } from '@/lib/db/schema'
 import readerFontsUrl from '@/styles/reader-fonts.css?url'
 
+// minWidth applies even to 'always': epub.js only switches to 2 columns once
+// the container is at least that wide (see Layout.calculate in its source),
+// so a forced-double layout still falls back to a single column on a narrow
+// phone screen instead of squeezing two illegibly thin columns onto it.
 const SPREAD_BY_COLUMNS: Record<ColumnLayout, { spread: string; minWidth: number }> = {
   single: { spread: 'none', minWidth: 800 },
-  double: { spread: 'always', minWidth: 0 },
+  double: { spread: 'always', minWidth: 800 },
   auto: { spread: 'auto', minWidth: 800 },
 }
 
@@ -127,6 +131,70 @@ function handleArrowKeyNavigation(rendition: Rendition, event: KeyboardEvent) {
   else if (event.key === 'ArrowRight') rendition.next()
 }
 
+const SWIPE_MIN_DISTANCE = 50
+
+// Swiping is the only way to turn pages on a phone: the arrow buttons are
+// hidden below `sm` (they cost ~16% of the screen width there) and keyboard
+// shortcuts obviously don't apply. epub.js only ships swipe handling for its
+// `continuous` manager with `snap` enabled — this reader uses the `default`
+// manager — so the gesture is wired up by hand.
+//
+// Registered on both the book's iframe document and the main window, for the
+// same reason handleArrowKeyNavigation is: the iframe is a separate browsing
+// context, so a touch landing on the text never reaches a listener on the
+// parent document. Returns its own cleanup so callers can unregister.
+function registerSwipeNavigation(
+  target: Document | Window,
+  getRendition: () => Rendition | null
+) {
+  let startX = 0
+  let startY = 0
+  let tracking = false
+
+  function onTouchStart(event: Event) {
+    const { touches, changedTouches, target: origin } = event as TouchEvent
+    // Ignore pinch-zoom, and anything starting inside the settings sheet —
+    // its Slider is dragged horizontally, which would otherwise read as a
+    // page turn on top of the value change (same conflict the keyboard
+    // handler above guards against).
+    if (
+      touches.length !== 1 ||
+      (origin instanceof Element && origin.closest('[data-slot="sheet-content"]'))
+    ) {
+      tracking = false
+      return
+    }
+    tracking = true
+    startX = changedTouches[0].clientX
+    startY = changedTouches[0].clientY
+  }
+
+  function onTouchEnd(event: Event) {
+    if (!tracking) return
+    tracking = false
+    const rendition = getRendition()
+    if (!rendition) return
+
+    const touch = (event as TouchEvent).changedTouches[0]
+    const deltaX = touch.clientX - startX
+    const deltaY = touch.clientY - startY
+    // Require a deliberate, mostly-horizontal move so that a tap, a
+    // long-press to select text, or a vertical drag doesn't turn the page.
+    if (Math.abs(deltaX) < SWIPE_MIN_DISTANCE || Math.abs(deltaX) <= Math.abs(deltaY)) return
+
+    if (deltaX < 0) rendition.next()
+    else rendition.prev()
+  }
+
+  target.addEventListener('touchstart', onTouchStart, { passive: true })
+  target.addEventListener('touchend', onTouchEnd, { passive: true })
+
+  return () => {
+    target.removeEventListener('touchstart', onTouchStart)
+    target.removeEventListener('touchend', onTouchEnd)
+  }
+}
+
 export default function Reader() {
   const { bookId } = useParams<{ bookId: string }>()
   const navigate = useNavigate()
@@ -134,6 +202,12 @@ export default function Reader() {
   const renditionRef = useRef<Rendition | null>(null)
   const bookRef = useRef<EpubBook | null>(null)
   const tocRef = useRef<NavItem[]>([])
+  // renderTo() hands back a Rendition immediately, but its view manager is
+  // attached asynchronously — calling next()/prev() before that lands throws
+  // from inside epub.js ("Cannot read properties of undefined (reading
+  // 'next')"), so a null check on the rendition alone isn't enough to know
+  // it's safe to page. Flipped once the first display has actually settled.
+  const canPageRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [toc, setToc] = useState<NavItem[]>([])
   const [activeTocId, setActiveTocId] = useState<string>()
@@ -148,6 +222,7 @@ export default function Reader() {
   useEffect(() => {
     if (!bookId || !viewerRef.current) return
     let cancelled = false
+    canPageRef.current = false
 
     async function open() {
       const record = await getBook(bookId!)
@@ -191,6 +266,10 @@ export default function Reader() {
         contents.document.addEventListener('keydown', (e: KeyboardEvent) =>
           handleArrowKeyNavigation(rendition, e)
         )
+        // Same reasoning for touch. No cleanup needed: epub.js tears down the
+        // whole iframe document when it unrenders a section, taking its
+        // listeners with it.
+        registerSwipeNavigation(contents.document, () => (canPageRef.current ? rendition : null))
       })
 
       applyTheme(rendition, activeTheme)
@@ -241,6 +320,9 @@ export default function Reader() {
 
       await rendition.display(progress?.cfi ?? undefined)
       await firstRelocation
+      // The view manager is attached and a page is on screen, so the
+      // page-turn controls (buttons, arrow keys, swipe) are safe to use now.
+      if (!cancelled) canPageRef.current = true
 
       // If locationsBook finishes generating after the initial display, the
       // relocated event above had nothing to compute percentage from yet.
@@ -272,6 +354,7 @@ export default function Reader() {
 
     return () => {
       cancelled = true
+      canPageRef.current = false
       renditionRef.current?.destroy()
       bookRef.current?.destroy()
       // locationsBook is deliberately not destroyed here: destroying it
@@ -291,12 +374,20 @@ export default function Reader() {
   // iframe — e.g. focus is on the header or nothing in particular.
   useEffect(() => {
     function handleKeydown(e: KeyboardEvent) {
-      const rendition = renditionRef.current
+      const rendition = canPageRef.current ? renditionRef.current : null
       if (rendition) handleArrowKeyNavigation(rendition, e)
     }
     window.addEventListener('keydown', handleKeydown)
     return () => window.removeEventListener('keydown', handleKeydown)
   }, [])
+
+  // Same coverage for swipes that land outside the book's iframe — the
+  // padding around it, or the header.
+  useEffect(
+    () =>
+      registerSwipeNavigation(window, () => (canPageRef.current ? renditionRef.current : null)),
+    []
+  )
 
   // Handles live updates when the person changes the theme/settings panel
   // while already reading. The initial application (before the first
@@ -349,7 +440,11 @@ export default function Reader() {
 
   return (
     <div className="flex h-screen flex-col" style={themeVars}>
-      <header className="relative flex items-center justify-between border-b px-4 py-2">
+      {/* grid (not the earlier absolute-centered title) so the center column
+          actually shrinks to make room for the side groups — a long title
+          plus the percentage badge could otherwise overlap on narrow phone
+          screens, since absolute centering ignores the side groups' widths. */}
+      <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b px-4 py-2">
         <div className="flex items-center">
           <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
             <ArrowLeft />
@@ -366,12 +461,8 @@ export default function Reader() {
             }}
           />
         </div>
-        {bookTitle && (
-          <span className="absolute left-1/2 max-w-[50%] -translate-x-1/2 truncate text-sm font-medium">
-            {bookTitle}
-          </span>
-        )}
-        <div className="flex items-center gap-3">
+        <span className="min-w-0 truncate text-center text-sm font-medium">{bookTitle}</span>
+        <div className="flex items-center justify-end gap-3">
           {percentage !== undefined && (
             <span className="text-sm text-muted-foreground">{percentage}%</span>
           )}
@@ -379,25 +470,44 @@ export default function Reader() {
         </div>
       </header>
 
-      <div className="relative flex-1 overflow-hidden">
+      {/* The arrows are flex siblings of the book rather than floating over it:
+          as real items they reserve their own width, so a line of text can
+          never run underneath them the way it could while they were absolutely
+          positioned on top. It also keeps their width defined in one place
+          instead of having to mirror it as padding on the book container.
+          They're hidden entirely on phones, where two strips cost ~16% of the
+          screen width and swiping replaces them (registerSwipeNavigation). */}
+      <div className="relative flex flex-1 overflow-hidden">
         {loading && (
-          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+          // z-10 because the arrows' opacity < 1 gives them their own stacking
+          // context, which would otherwise paint them over this overlay.
+          <div className="absolute inset-0 z-10 flex items-center justify-center text-muted-foreground">
             Carregando livro...
           </div>
         )}
-        <div ref={viewerRef} className="h-full w-full" />
 
         <button
           aria-label="Página anterior"
           onClick={() => renditionRef.current?.prev()}
-          className="absolute inset-y-0 left-0 flex w-12 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100"
+          disabled={loading}
+          className="hidden w-12 shrink-0 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100 disabled:cursor-not-allowed sm:flex"
         >
           <ChevronLeft />
         </button>
+
+        {/* Breathing room lives on this wrapper, never on the element handed to
+            epub.js: epub.js measures that element to size its columns, and
+            clientWidth counts padding, so padding applied directly to it makes
+            it lay out wider than the space it actually occupies. */}
+        <div className="min-w-0 flex-1 px-2 py-2 sm:px-3 sm:py-4">
+          <div ref={viewerRef} className="h-full w-full" />
+        </div>
+
         <button
           aria-label="Próxima página"
           onClick={() => renditionRef.current?.next()}
-          className="absolute inset-y-0 right-0 flex w-12 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100"
+          disabled={loading}
+          className="hidden w-12 shrink-0 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100 disabled:cursor-not-allowed sm:flex"
         >
           <ChevronRight />
         </button>
