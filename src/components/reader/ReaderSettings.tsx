@@ -185,7 +185,15 @@ export default function ReaderSettings() {
             </Select>
           </div>
 
-          <div className="flex flex-col gap-2">
+          {/* Duas colunas só cabem quando a área de texto tem pelo menos 800px
+              (o minSpreadWidth passado ao epub.js em Reader.tsx). Descontando a
+              moldura do leitor — duas setas de 48px mais 12px de respiro de cada
+              lado, 120px no total — isso só acontece a partir de 920px de
+              viewport. Abaixo disso o epub.js pagina em 1 coluna seja qual for o
+              valor escolhido, então mostrar o controle seria oferecer um botão
+              que não faz nada. O valor salvo não é alterado: quem escolheu duas
+              colunas no desktop reencontra a escolha ao voltar pra lá. */}
+          <div className="hidden flex-col gap-2 min-[920px]:flex">
             <Label>Colunas</Label>
             <ToggleGroup
               type="single"
