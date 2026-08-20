@@ -132,3 +132,5 @@ Registro de alterações relevantes do projeto: o que mudou e por quê. Ver regr
   - _Verificação_: repetida a bateria de toque no Chromium com contexto real (`hasTouch` + CDP `Input.dispatchTouchEvent`) depois da limpeza — swipe vira página nos dois sentidos (`scrollLeft` 0 → 374 → 748 → 374), arrasto vertical e toque parado não viram, toque em link continua sendo repassado, `?debug` não desenha mais nada e o console fica limpo.
 - **Responsividade mobile marcada como concluída** no roadmap do README (Fase 3).
   - _Por quê_: a rodada de correções de 13/08 (botão de remover em touch, cabeçalho do leitor, colunas em tela estreita, setas trocadas por swipe) cobriu o item, mas faltava a confirmação de que o gesto funcionava num iPhone de verdade — que era justamente o que estava pendente até hoje.
+- **`.claude/launch.json` passou a iniciar o servidor de desenvolvimento** (`npm run dev`), em vez de só se anexar a um já em execução.
+  - _Por quê_: a configuração antiga só tinha `url` e `port`, então qualquer verificação automatizada dependia de alguém ter deixado o `npm run dev` rodando à mão — e falhava com `ERR_CONNECTION_REFUSED` quando não estava.
