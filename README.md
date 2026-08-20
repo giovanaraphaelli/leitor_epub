@@ -57,5 +57,5 @@ npm run dev
 
 - [ ] Animações e transições suaves
 - [ ] Empty states e ilustrações
-- [ ] Responsividade mobile
+- [x] Responsividade mobile
 - [ ] Busca dentro do livro
