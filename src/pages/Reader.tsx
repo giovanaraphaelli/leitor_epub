@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import ePub, { EpubCFI, type Book as EpubBook, type Contents, type NavItem, type Rendition } from 'epubjs'
+// Not re-exported from epub.js's main entry (unlike Book/Contents/NavItem/
+// Rendition above), so it's pulled straight from its own declaration file.
+import type Section from 'epubjs/types/section'
 import { ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getBook } from '@/lib/db/books'
@@ -8,6 +11,7 @@ import { getProgress, saveProgress } from '@/lib/db/progress'
 import { useThemeStore } from '@/store/theme-store'
 import ReaderSettings from '@/components/reader/ReaderSettings'
 import TableOfContents from '@/components/reader/TableOfContents'
+import BookSearch, { type SearchResult } from '@/components/reader/BookSearch'
 import type { ColumnLayout, Theme } from '@/lib/db/schema'
 import readerFontsUrl from '@/styles/reader-fonts.css?url'
 
@@ -47,6 +51,25 @@ function resolveTocHref(book: EpubBook, href: string): string {
 function flattenNavItems(items: NavItem[]): NavItem[] {
   return items.flatMap((item) => [item, ...(item.subitems ? flattenNavItems(item.subitems) : [])])
 }
+
+// Labels a search result with the chapter it was found in. Deliberately
+// coarser than computeActiveTocId above: that one picks the exact subsection
+// a *currently displayed* position falls under by comparing CFIs one at a
+// time, which would mean a CFI comparison per toc entry per match. A search
+// can turn up hundreds of matches, so this instead labels every match in a
+// section with that section's first toc entry — cheap, and precise enough
+// for "which chapter is this result in".
+function chapterLabelForHref(book: EpubBook, toc: NavItem[], href: string): string | undefined {
+  return flattenNavItems(toc).find((item) => resolveTocHref(book, item.href).split('#')[0] === href)
+    ?.label.trim()
+}
+
+// A search across the whole book can turn up far more matches than anyone
+// would scroll through (a short common word could hit hundreds of times) —
+// capped so a broad query stops scanning once the list is already long
+// enough to be useless, instead of walking every remaining section for
+// matches nobody will see.
+const MAX_SEARCH_RESULTS = 200
 
 // Several TOC entries often share the same file (each pointing at a
 // different heading inside it via #fragment) — matching by file alone
@@ -290,6 +313,19 @@ export default function Reader() {
   const renditionRef = useRef<Rendition | null>(null)
   const bookRef = useRef<EpubBook | null>(null)
   const tocRef = useRef<NavItem[]>([])
+  // Kept so a search (see performSearch) can spin up its own independent
+  // Book from the same bytes on demand — same reasoning as locationsBook
+  // below: searching loads and unloads every Section it scans, which isn't
+  // safe to run against the same Book the rendition is displaying from.
+  const bookBufferRef = useRef<ArrayBuffer | null>(null)
+  // Created lazily on the first search rather than eagerly alongside
+  // locationsBook, since most reading sessions never open the search panel.
+  const searchBookRef = useRef<EpubBook | null>(null)
+  // Bumped on every new search and on close/reopen of the book; a scan in
+  // flight checks it before touching another section and bails out as soon
+  // as it no longer matches, so an abandoned search doesn't keep loading and
+  // unloading sections of a book nobody is looking at anymore.
+  const searchRequestIdRef = useRef(0)
   // renderTo() hands back a Rendition immediately, but its view manager is
   // attached asynchronously — calling next()/prev() before that lands throws
   // from inside epub.js ("Cannot read properties of undefined (reading
@@ -318,6 +354,7 @@ export default function Reader() {
       setBookTitle(record.title)
 
       const arrayBuffer = await record.fileBlob.arrayBuffer()
+      bookBufferRef.current = arrayBuffer
       const book = ePub(arrayBuffer)
       bookRef.current = book
 
@@ -452,6 +489,18 @@ export default function Reader() {
       // whole separate-Book approach exists to avoid. It's unused after
       // `cancelled` flips, so it just finishes generating in the background
       // and gets garbage-collected once nothing references it anymore.
+      //
+      // searchBookRef follows the same logic, for the same reason: a scan
+      // could be mid section-load when this runs. Bumping the request id
+      // makes performSearch stop touching it on its own after the section
+      // currently in flight settles; the ref is just dropped so the next
+      // book search starts a fresh instance instead of reusing this one.
+      // Not a ref to a rendered node, just a shared counter also written to
+      // by performSearch — the "stale by cleanup time" concern the lint rule
+      // warns about doesn't apply to it.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      searchRequestIdRef.current++
+      searchBookRef.current = null
     }
     // activeTheme is intentionally excluded: this effect should only re-run
     // (recreating the whole book/rendition) when the book itself changes.
@@ -517,6 +566,61 @@ export default function Reader() {
     if (cfi) rendition.display(cfi)
   }, [activeTheme, loading])
 
+  // Scans every section of the book for `query`, independently of whatever
+  // the rendition currently has displayed. Runs against searchBookRef, a
+  // second Book parsed from the same bytes and created lazily on first use —
+  // scanning means loading and unloading each Section in turn (the same
+  // shape as book.locations.generate(), see the comment where locationsBook
+  // is created above), which isn't safe to do against the Book the rendition
+  // is actively reading from.
+  //
+  // useCallback keeps this identity-stable across renders so BookSearch's own
+  // debounce effect (which depends on it) doesn't re-fire on every keystroke
+  // it's not actually related to.
+  const performSearch = useCallback(async (query: string): Promise<SearchResult[]> => {
+    const requestId = ++searchRequestIdRef.current
+
+    if (!searchBookRef.current) {
+      const searchBook = ePub(bookBufferRef.current!.slice(0))
+      await searchBook.ready
+      // A search started elsewhere, or the book was closed, while this was
+      // parsing — the freshly-created Book has nothing displayed and nothing
+      // else references it, so it's simplest to just let it be discarded.
+      if (searchRequestIdRef.current !== requestId) return []
+      searchBookRef.current = searchBook
+    }
+    const searchBook = searchBookRef.current
+    const toc = tocRef.current
+
+    const sections: Section[] = []
+    searchBook.spine.each((section: Section) => sections.push(section))
+
+    const results: SearchResult[] = []
+    for (const section of sections) {
+      if (searchRequestIdRef.current !== requestId || results.length >= MAX_SEARCH_RESULTS) break
+
+      await section.load(searchBook.load.bind(searchBook))
+      try {
+        if (searchRequestIdRef.current !== requestId) break
+        // Typed manually: search() exists in epub.js's source (preferred
+        // over the older find() — it matches across element boundaries, not
+        // just within a single text node) but isn't in its .d.ts file.
+        const matches = (
+          section as unknown as { search(q: string): { cfi: string; excerpt: string }[] }
+        ).search(query)
+        const chapterLabel = chapterLabelForHref(searchBook, toc, section.href)
+        for (const match of matches) {
+          results.push({ cfi: match.cfi, excerpt: match.excerpt, chapterLabel })
+          if (results.length >= MAX_SEARCH_RESULTS) break
+        }
+      } finally {
+        section.unload()
+      }
+    }
+
+    return results
+  }, [])
+
   // Icons and text in the reader chrome use the `text-foreground` /
   // `text-muted-foreground` / `hover:bg-muted` utilities, which read CSS
   // variables — not the book's per-theme colors. Overriding those variables
@@ -561,6 +665,10 @@ export default function Reader() {
                 rendition.display(resolveTocHref(book, href)).catch(console.error)
               }
             }}
+          />
+          <BookSearch
+            onSearch={performSearch}
+            onNavigate={(cfi) => renditionRef.current?.display(cfi).catch(console.error)}
           />
         </div>
         <span className="min-w-0 truncate text-center text-sm font-medium">{bookTitle}</span>

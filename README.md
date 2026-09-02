@@ -7,6 +7,7 @@ Leitor de EPUB pessoal, feito para rodar no navegador: você sobe seus próprios
 - **Upload de EPUBs** — arraste ou selecione arquivos `.epub` para adicionar à sua biblioteca
 - **Biblioteca** — grade com capa, título e autor dos livros adicionados; remover livro com confirmação
 - **Leitura paginada** — navegação por capítulos, sumário (TOC); vira a página com as setas na tela, as setas do teclado ou, no celular, deslizando o dedo
+- **Busca dentro do livro** — encontra qualquer trecho de texto no livro inteiro, com o capítulo de origem e navegação direta ao clicar
 - **Progresso salvo automaticamente** — volta exatamente de onde parou em cada livro
 - **Customização visual completa**:
   - Paletas prontas (rosa pastel, lavanda, menta, sépia, claro, escuro)
@@ -58,4 +59,4 @@ npm run dev
 - [ ] Animações e transições suaves
 - [ ] Empty states e ilustrações
 - [x] Responsividade mobile
-- [ ] Busca dentro do livro
+- [x] Busca dentro do livro
