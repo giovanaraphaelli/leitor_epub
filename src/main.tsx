@@ -4,6 +4,7 @@ import { RouterProvider } from 'react-router-dom'
 import './index.css'
 import { router } from '@/routes'
 import { useThemeStore } from '@/store/theme-store'
+import StatusBarTint from '@/components/StatusBarTint'
 
 // Awaited before the first render (not fired off in parallel with it): the
 // reader applies the active theme before its first `display()` to avoid a
@@ -23,6 +24,7 @@ useThemeStore.subscribe((state) => syncThemeColor(state.activeTheme.background))
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
+    <StatusBarTint />
     <RouterProvider router={router} />
   </StrictMode>,
 )
