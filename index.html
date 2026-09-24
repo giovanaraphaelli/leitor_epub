@@ -6,6 +6,18 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#ffffff" />
+    <script>
+      // Last theme background, applied before any module runs: the installed
+      // iOS app picks its status bar color at launch, before the saved theme
+      // (in IndexedDB, async) can be read. Kept in sync by main.tsx.
+      try {
+        var themeColor = localStorage.getItem('theme-color')
+        if (themeColor) {
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', themeColor)
+          document.documentElement.style.backgroundColor = themeColor
+        }
+      } catch (e) {}
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Leitor EPUB</title>
   </head>
