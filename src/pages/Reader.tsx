@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import ePub, { EpubCFI, type Book as EpubBook, type Contents, type NavItem, type Rendition } from 'epubjs'
+import ePub, {
+  EpubCFI,
+  type Book as EpubBook,
+  type Contents,
+  type Location,
+  type NavItem,
+  type Rendition,
+} from 'epubjs'
 // Not re-exported from epub.js's main entry (unlike Book/Contents/NavItem/
 // Rendition above), so it's pulled straight from its own declaration file.
 import type Section from 'epubjs/types/section'
@@ -12,7 +19,7 @@ import { useThemeStore } from '@/store/theme-store'
 import ReaderSettings from '@/components/reader/ReaderSettings'
 import TableOfContents from '@/components/reader/TableOfContents'
 import BookSearch, { type SearchResult } from '@/components/reader/BookSearch'
-import type { ColumnLayout, Theme } from '@/lib/db/schema'
+import type { ColumnLayout, Progress, Theme } from '@/lib/db/schema'
 import readerFontsUrl from '@/styles/reader-fonts.css?url'
 
 // minWidth applies even to 'always': epub.js only switches to 2 columns once
@@ -140,6 +147,98 @@ function applyTheme(rendition: Rendition, theme: Theme) {
 
   const { spread, minWidth } = SPREAD_BY_COLUMNS[theme.columns]
   rendition.spread(spread, minWidth)
+}
+
+// epub.js's addStylesheet never resolves if the stylesheet fails to load;
+// positioning against the fallback font beats an overlay that never clears.
+const STYLING_TIMEOUT_MS = 3000
+const SETTLE_MAX_ATTEMPTS = 3
+
+function withTimeout(promise: Promise<unknown>, ms: number): Promise<unknown> {
+  return Promise.race([promise, new Promise((resolve) => setTimeout(resolve, ms))])
+}
+
+function nextFrames(count: number): Promise<void> {
+  return new Promise((resolve) => {
+    const step = (remaining: number) =>
+      remaining === 0 ? resolve() : requestAnimationFrame(() => step(remaining - 1))
+    step(count)
+  })
+}
+
+function nextRelocation(rendition: Rendition, timeoutMs = 1000): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      rendition.off('relocated', done)
+      resolve()
+    }
+    const timer = setTimeout(done, timeoutMs)
+    rendition.on('relocated', done)
+  })
+}
+
+function waitForStyledContents(
+  rendition: Rendition,
+  stylesheets: WeakMap<Document, Promise<unknown>>
+): Promise<unknown> {
+  const contentsList = rendition.getContents() as unknown as Contents[]
+  return withTimeout(
+    Promise.all(
+      contentsList.map(async ({ document: doc }) => {
+        if (!doc) return
+        await stylesheets.get(doc)
+        // Forces a layout pass so the fonts in use are actually requested —
+        // otherwise fonts.ready can resolve before any of them starts loading.
+        void doc.body?.offsetHeight
+        await doc.fonts?.ready
+      })
+    ),
+    STYLING_TIMEOUT_MS
+  )
+}
+
+function locationContains(location: Location | undefined, cfi: string): boolean {
+  if (!location?.start?.cfi || !location.end?.cfi) return false
+  const epubCfi = new EpubCFI()
+  return epubCfi.compare(cfi, location.start.cfi) >= 0 && epubCfi.compare(cfi, location.end.cfi) <= 0
+}
+
+// Unlike rendition.location, computed fresh: after a reflow the screen can
+// differ from the last position epub.js reported.
+function currentLocationOf(rendition: Rendition): Location | undefined {
+  try {
+    return rendition.currentLocation() as unknown as Location | undefined
+  } catch {
+    return undefined
+  }
+}
+
+// epub.js picks the page for a display() target as soon as the section's
+// iframe exists, but the theme and the palette fonts only reach that iframe
+// afterwards (content hooks, then async font loads). Each reflows the text
+// under a fixed scroll offset, so the screen drifts away from the target and
+// epub.js never re-seeks. This waits for styling, gives epub.js a few frames
+// to re-expand the iframe (ResizeObserver + rAF on its side), and displays
+// the target again if it isn't on screen — within an already-rendered
+// section that only scrolls. Hrefs can't be checked like a CFI, so they're
+// re-displayed once.
+async function settleAt(
+  rendition: Rendition,
+  target: string,
+  stylesheets: WeakMap<Document, Promise<unknown>>
+): Promise<void> {
+  const isCfi = new EpubCFI().isCfiString(target)
+  for (let attempt = 0; attempt < SETTLE_MAX_ATTEMPTS; attempt++) {
+    await waitForStyledContents(rendition, stylesheets)
+    await nextFrames(3)
+    // destroy() clears `book`: the reader was closed mid-settle.
+    if (!rendition.book) return
+    if (isCfi ? locationContains(currentLocationOf(rendition), target) : attempt > 0) return
+    const relocated = nextRelocation(rendition)
+    await rendition.display(target)
+    await relocated
+  }
 }
 
 // Skips page-turning when the key press originates inside the settings
@@ -332,6 +431,16 @@ export default function Reader() {
   // 'next')"), so a null check on the rendition alone isn't enough to know
   // it's safe to page. Flipped once the first display has actually settled.
   const canPageRef = useRef(false)
+  // The saved position. Re-seeks after a relayout aim here, not at what's on
+  // screen — that's exactly what a relayout disturbs.
+  const positionRef = useRef<Progress | null>(null)
+  // Non-zero while restoring on open or re-seeking after a theme change:
+  // relocations then are layout artefacts and must not be saved. A counter
+  // because theme changes can overlap (slider drag).
+  const settlingRef = useRef(0)
+  const stylesheetsRef = useRef(new WeakMap<Document, Promise<unknown>>())
+  // Set by open(), which owns the locations Book the percentage comes from.
+  const persistCurrentLocationRef = useRef<() => void>(() => {})
   const [loading, setLoading] = useState(true)
   const [toc, setToc] = useState<NavItem[]>([])
   const [activeTocId, setActiveTocId] = useState<string>()
@@ -354,6 +463,11 @@ export default function Reader() {
       setBookTitle(record.title)
 
       const arrayBuffer = await record.fileBlob.arrayBuffer()
+      // From here to renditionRef being set is synchronous. Without this
+      // check, closing the reader during the await left a rendition the
+      // cleanup never saw — still able to save a position computed against a
+      // detached viewer.
+      if (cancelled) return
       bookBufferRef.current = arrayBuffer
       const book = ePub(arrayBuffer)
       bookRef.current = book
@@ -368,9 +482,11 @@ export default function Reader() {
       // the two can run at the same time safely — this is also what avoids
       // blocking the first page on a multi-second scan of the whole book.
       const locationsBook = ePub(arrayBuffer.slice(0))
+      let locationsGenerated = false
       const locationsReady = (async () => {
         await locationsBook.ready
         await locationsBook.locations.generate(1024)
+        locationsGenerated = true
       })()
 
       const rendition = book.renderTo(viewerRef.current!, {
@@ -384,7 +500,7 @@ export default function Reader() {
       // inherit stylesheets from the main page — the palette fonts need to be
       // injected directly into each rendered section.
       rendition.hooks.content.register((contents: Contents) => {
-        contents.addStylesheet(readerFontsUrl)
+        stylesheetsRef.current.set(contents.document, contents.addStylesheet(readerFontsUrl))
         // Keydown events inside the iframe never reach the main document's
         // own listener (separate browsing context) — each rendered section
         // needs its own.
@@ -403,7 +519,10 @@ export default function Reader() {
       appliedThemeRef.current = { rendition, theme: activeTheme }
 
       const progress = await getProgress(bookId!)
-      if (!cancelled) setPercentage(progress?.percentage)
+      if (cancelled) return
+      positionRef.current = progress ?? null
+      setPercentage(progress?.percentage)
+      const savedCfi = progress?.cfi ?? undefined
 
       // display() resolves once the section is attached, but settling on the
       // exact CFI offset inside a paginated section can finish slightly
@@ -417,52 +536,80 @@ export default function Reader() {
         resolveFirstRelocation = resolve
       })
 
-      // locationsBook.locations is empty until locationsReady resolves — in
-      // that window there's nothing meaningful to compute, so callers get
-      // undefined back and should keep showing/saving the last known value
-      // instead of overwriting it with a bogus 0%.
+      // Not length() > 1: locations fill in during generate(), but `total` is
+      // only set at the end, so every percentage is 0 until then. Callers get
+      // undefined and keep the last known value.
       const percentageForCfi = (cfi: string): number | undefined =>
-        locationsBook.locations.length() > 1
+        locationsGenerated
           ? Math.round(locationsBook.locations.percentageFromCfi(cfi) * 100)
           : undefined
 
-      rendition.on(
-        'relocated',
-        (location: { start: { cfi: string; href: string } }) => {
-          resolveFirstRelocation?.()
-          resolveFirstRelocation = undefined
-          setActiveTocId(computeActiveTocId(rendition, book, tocRef.current, location.start.href))
+      // Retried once, only while still the newest write — a late retry would
+      // put an older position back on top of a newer one.
+      let saveSeq = 0
+      const persist = (cfi: string, percentage: number) => {
+        const record: Progress = { bookId: bookId!, cfi, percentage, lastReadAt: Date.now() }
+        positionRef.current = record
+        const seq = ++saveSeq
+        saveProgress(record)
+          .catch(() => (seq === saveSeq ? saveProgress(record) : undefined))
+          .catch((error) => console.error('Não foi possível salvar o progresso de leitura', error))
+      }
 
-          const computedPercentage = percentageForCfi(location.start.cfi)
-          const roundedPercentage = computedPercentage ?? (progress?.percentage ?? 0)
-          if (computedPercentage !== undefined) setPercentage(roundedPercentage)
-          saveProgress({
-            bookId: bookId!,
-            cfi: location.start.cfi,
-            percentage: roundedPercentage,
-            lastReadAt: Date.now(),
-          })
-        }
-      )
+      // Only once the reader has left the page holding the saved position: a
+      // relayout moves where that page *starts* without the reader moving,
+      // and saving that start each time made the position creep backwards.
+      const persistIfMoved = (location: Location | undefined) => {
+        const cfi = location?.start?.cfi
+        if (!cfi || settlingRef.current > 0) return
+        const anchor = positionRef.current?.cfi
+        if (anchor && locationContains(location, anchor)) return
+        persist(cfi, percentageForCfi(cfi) ?? positionRef.current?.percentage ?? 0)
+      }
 
-      await rendition.display(progress?.cfi ?? undefined)
-      await firstRelocation
+      // 'relocated' lags a page turn by a debounce plus animation frames,
+      // which never run if the rendition is destroyed first or the page is
+      // hidden and then killed — so on exit, save what's on screen directly.
+      persistCurrentLocationRef.current = () => {
+        if (canPageRef.current) persistIfMoved(currentLocationOf(rendition))
+      }
+
+      rendition.on('relocated', (location: Location) => {
+        resolveFirstRelocation?.()
+        resolveFirstRelocation = undefined
+        setActiveTocId(computeActiveTocId(rendition, book, tocRef.current, location.start.href))
+
+        const computedPercentage = percentageForCfi(location.start.cfi)
+        if (computedPercentage !== undefined) setPercentage(computedPercentage)
+        persistIfMoved(location)
+      })
+
+      settlingRef.current++
+      try {
+        await rendition.display(savedCfi)
+        await firstRelocation
+        if (savedCfi && !cancelled) await settleAt(rendition, savedCfi, stylesheetsRef.current)
+      } finally {
+        settlingRef.current--
+      }
       // The view manager is attached and a page is on screen, so the
       // page-turn controls (buttons, arrow keys, swipe) are safe to use now.
       if (!cancelled) canPageRef.current = true
 
       // If locationsBook finishes generating after the initial display, the
       // relocated event above had nothing to compute percentage from yet.
-      // Recompute it now for the current position — reading rendition.location
-      // directly, not re-calling display()/reportLocation(), since either
-      // would re-touch the rendition just to recompute a number that has
-      // nothing to do with it.
+      // Recompute it now for the screen and for the saved position (its CFI
+      // untouched) — reading positions directly, not re-calling
+      // display()/reportLocation(), since either would re-touch the rendition
+      // just to recompute a number that has nothing to do with it.
       locationsReady.then(() => {
-        const cfi = renditionRef.current?.location?.start?.cfi
-        const roundedPercentage = cfi ? percentageForCfi(cfi) : undefined
-        if (!cancelled && cfi && roundedPercentage !== undefined) {
-          setPercentage(roundedPercentage)
-          saveProgress({ bookId: bookId!, cfi, percentage: roundedPercentage, lastReadAt: Date.now() })
+        if (cancelled) return
+        const onScreen = rendition.location?.start?.cfi
+        if (onScreen) setPercentage(percentageForCfi(onScreen))
+        const position = positionRef.current
+        const percentage = position?.cfi ? percentageForCfi(position.cfi) : undefined
+        if (position?.cfi && percentage !== undefined && percentage !== position.percentage) {
+          persist(position.cfi, percentage)
         }
       })
 
@@ -481,6 +628,8 @@ export default function Reader() {
 
     return () => {
       cancelled = true
+      persistCurrentLocationRef.current()
+      persistCurrentLocationRef.current = () => {}
       canPageRef.current = false
       renditionRef.current?.destroy()
       bookRef.current?.destroy()
@@ -520,6 +669,21 @@ export default function Reader() {
     return () => window.removeEventListener('keydown', handleKeydown)
   }, [])
 
+  // On a phone, closing the app is the page going hidden, after which it may
+  // be killed with no further event. pagehide covers closing a desktop tab.
+  useEffect(() => {
+    const flush = () => persistCurrentLocationRef.current()
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    document.addEventListener('visibilitychange', flushWhenHidden)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      document.removeEventListener('visibilitychange', flushWhenHidden)
+      window.removeEventListener('pagehide', flush)
+    }
+  }, [])
+
   // The gesture surface over the book is where swipes are actually handled —
   // see registerSwipeNavigation for why it isn't the book's iframe.
   useEffect(() => {
@@ -544,27 +708,41 @@ export default function Reader() {
   // (rendition, theme) pair was already applied skips that redundant call
   // without missing a genuine change.
   //
-  // For a genuine change, re-displaying at the CFI we were at right before
-  // reapplying is not optional: rendition.spread() unconditionally forces a
-  // layout recalculation (needed for real column/font-size/font-family
-  // changes), but epub.js's paginated manager recomputes page boundaries
-  // from scratch on that recalculation and doesn't reliably keep showing the
-  // same content — even a *palette-only* change (which touches no layout
-  // property at all) was observed moving the visible page. Re-displaying at
-  // the pre-reapply CFI re-settles on the exact same reading spot regardless
-  // of what actually changed, and — since display() re-fires 'relocated' —
-  // also re-saves progress at that same correct position instead of at
-  // wherever the relayout happened to land.
+  // For a genuine change, re-seeking the reading position afterwards is not
+  // optional: rendition.spread() unconditionally forces a layout
+  // recalculation, and epub.js's paginated manager doesn't reliably keep
+  // showing the same content through it — even a *palette-only* change was
+  // observed moving the visible page. A new font family also reflows again
+  // once it loads, hence settleAt. Targeting the saved position (not what's
+  // on screen) makes overlapping changes (slider drag) converge on one spot.
   useEffect(() => {
     const rendition = renditionRef.current
     if (!rendition) return
     const applied = appliedThemeRef.current
     if (applied && applied.rendition === rendition && applied.theme === activeTheme) return
     appliedThemeRef.current = { rendition, theme: activeTheme }
-    const cfi = rendition.location?.start?.cfi
+    const cfi = positionRef.current?.cfi ?? rendition.location?.start?.cfi
     applyTheme(rendition, activeTheme)
-    if (cfi) rendition.display(cfi)
+    if (!cfi) return
+    settlingRef.current++
+    settleAt(rendition, cfi, stylesheetsRef.current)
+      .catch(console.error)
+      .finally(() => settlingRef.current--)
   }, [activeTheme, loading])
+
+  // TOC entries and search results usually open another section, which has
+  // the same reflow-after-positioning problem as restoring on open. The final
+  // flush covers a settle that needed no re-display, where the last saved
+  // relocation predates the reflow.
+  const navigateTo = useCallback((target: string) => {
+    const rendition = renditionRef.current
+    if (!rendition) return
+    rendition
+      .display(target)
+      .then(() => settleAt(rendition, target, stylesheetsRef.current))
+      .then(() => persistCurrentLocationRef.current())
+      .catch(console.error)
+  }, [])
 
   // Scans every section of the book for `query`, independently of whatever
   // the rendition currently has displayed. Runs against searchBookRef, a
@@ -660,16 +838,10 @@ export default function Reader() {
             activeTocId={activeTocId}
             onNavigate={(href) => {
               const book = bookRef.current
-              const rendition = renditionRef.current
-              if (book && rendition) {
-                rendition.display(resolveTocHref(book, href)).catch(console.error)
-              }
+              if (book) navigateTo(resolveTocHref(book, href))
             }}
           />
-          <BookSearch
-            onSearch={performSearch}
-            onNavigate={(cfi) => renditionRef.current?.display(cfi).catch(console.error)}
-          />
+          <BookSearch onSearch={performSearch} onNavigate={navigateTo} />
         </div>
         <span className="min-w-0 truncate text-center text-sm font-medium">{bookTitle}</span>
         <div className="flex items-center justify-end gap-3">
