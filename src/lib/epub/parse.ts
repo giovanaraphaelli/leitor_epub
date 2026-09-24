@@ -1,4 +1,5 @@
 import ePub from 'epubjs'
+import { joinAuthors, readBookInfo } from './edit'
 
 export interface ParsedEpub {
   title: string
@@ -22,9 +23,15 @@ export async function parseEpubMetadata(file: File): Promise<ParsedEpub> {
 
   book.destroy()
 
+  // epub.js reports only the first dc:title (which can be a collection's) and
+  // the first creator (which can be an illustrator); readBookInfo picks the
+  // main title and every author — what the edit dialog shows and saves.
+  // Books it declines to read (DRM) keep epub.js's reading.
+  const info = await readBookInfo(file).catch(() => undefined)
+
   return {
-    title: metadata.title || file.name.replace(/\.epub$/i, ''),
-    author: metadata.creator || 'Autor desconhecido',
+    title: info?.title || metadata.title || file.name.replace(/\.epub$/i, ''),
+    author: (info && joinAuthors(info.authors)) || metadata.creator || 'Autor desconhecido',
     coverBlob,
   }
 }

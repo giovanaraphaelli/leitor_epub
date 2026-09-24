@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -9,7 +8,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 import { v4 as uuid } from "uuid";
-import { EllipsisVertical, Lock, Plus } from "lucide-react";
+import { Download, EllipsisVertical, Lock, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -25,10 +24,14 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import CoverImage from "@/components/CoverImage";
+import EditBookDialog from "@/components/library/EditBookDialog";
 import { listBooks, addBook, removeBook } from "@/lib/db/books";
 import { listProgress } from "@/lib/db/progress";
+import { exportBook } from "@/lib/epub/export";
 import { parseEpubMetadata } from "@/lib/epub/parse";
 import type { Book, Progress, Theme } from "@/lib/db/schema";
 import { themeTint } from "@/lib/theme-colors";
@@ -37,21 +40,6 @@ import { useThemeStore } from "@/store/theme-store";
 import ProgressBar from "@/components/ProgressBar";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
-
-// Its object URL lives exactly as long as this image shows the blob, revoked
-// when either goes. Created in an effect and set on the element directly, not
-// during render: StrictMode runs render work twice, and the URL made by the
-// discarded pass was never revoked. A layout effect, so the cover is there on
-// the first paint instead of a frame later.
-function CoverImage({ blob, className }: { blob: Blob; className?: string }) {
-  const ref = useRef<HTMLImageElement>(null);
-  useLayoutEffect(() => {
-    const url = URL.createObjectURL(blob);
-    ref.current!.src = url;
-    return () => URL.revokeObjectURL(url);
-  }, [blob]);
-  return <img ref={ref} alt="" className={className} />;
-}
 
 // A book being read, as a card at the top of the library. The whole card is
 // the button — stretched over it, since a <button> can't hold the heading
@@ -140,6 +128,9 @@ export default function Library() {
   const [progress, setProgress] = useState<Progress[]>([]);
   const [importing, setImporting] = useState(false);
   const [bookToRemove, setBookToRemove] = useState<Book | null>(null);
+  // A new session per opening remounts the dialog (see EditBookDialog).
+  const [editing, setEditing] = useState<{ book: Book; session: number } | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const activeTheme = useThemeStore((s) => s.activeTheme);
@@ -165,14 +156,18 @@ export default function Library() {
     "--popover": themeTint(activeTheme, 5),
     "--popover-foreground": activeTheme.textColor,
   } as CSSProperties;
-  // The book menu and the removal dialog render through portals, outside
-  // the themed subtree, so they get the palette again.
+  // The book menu and the dialogs render through portals, outside the themed
+  // subtree, so they get the palette again. --input and --ring: the edit
+  // fields' border and focus ring, the app's fixed light grays otherwise — a
+  // bright outline on a dark palette.
   const portalVars = {
     ...themeVars,
     background: undefined,
     "--background": activeTheme.background,
     "--accent": `${activeTheme.textColor}1a`,
     "--accent-foreground": activeTheme.textColor,
+    "--input": themeTint(activeTheme, 20),
+    "--ring": themeTint(activeTheme, 65),
   } as CSSProperties;
 
   useEffect(() => {
@@ -450,8 +445,28 @@ export default function Library() {
                         <DropdownMenuContent align="end" style={portalVars}>
                           <DropdownMenuItem
                             className="cursor-pointer"
+                            onSelect={() => {
+                              setEditing({ book, session: Date.now() });
+                              setEditOpen(true);
+                            }}
+                          >
+                            <Pencil />
+                            Editar
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="cursor-pointer"
+                            onSelect={() => void exportBook(book)}
+                          >
+                            <Download />
+                            Exportar
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            variant="destructive"
+                            className="cursor-pointer"
                             onSelect={() => setBookToRemove(book)}
                           >
+                            <Trash2 />
                             Remover
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -500,6 +515,17 @@ export default function Library() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {editing && (
+        <EditBookDialog
+          key={editing.session}
+          book={editing.book}
+          open={editOpen}
+          onClose={() => setEditOpen(false)}
+          onSaved={async () => setBooks(await listBooks())}
+          style={portalVars}
+        />
+      )}
 
       <footer className="border-t px-6 py-4 text-center text-xs text-muted-foreground">
         <p className="flex items-center justify-center gap-1.5">

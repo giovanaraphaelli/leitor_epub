@@ -12,6 +12,10 @@ export function addBook(book: Book): Promise<string> {
   return db.books.add(book)
 }
 
+export async function updateBook(id: string, changes: Partial<Omit<Book, 'id'>>): Promise<void> {
+  await db.books.update(id, changes)
+}
+
 export async function removeBook(id: string): Promise<void> {
   await db.transaction('rw', db.books, db.progress, async () => {
     await db.books.delete(id)
