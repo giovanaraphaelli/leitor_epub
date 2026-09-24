@@ -1,5 +1,5 @@
 /* Fontes disponíveis no seletor de fonte do leitor (src/lib/db/fonts.ts).
-   Injetado dentro do iframe do epub.js via Contents.addStylesheet — o
+   Injetado inline dentro do iframe do epub.js via Contents.addStylesheetCss — o
    conteúdo do livro roda num documento separado que não herda o CSS
    da página principal. */
 @import '@fontsource/nunito/400.css';

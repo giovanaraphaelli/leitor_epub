@@ -20,7 +20,7 @@ import ReaderSettings from '@/components/reader/ReaderSettings'
 import TableOfContents from '@/components/reader/TableOfContents'
 import BookSearch, { type SearchResult } from '@/components/reader/BookSearch'
 import type { ColumnLayout, Progress, Theme } from '@/lib/db/schema'
-import readerFontsUrl from '@/styles/reader-fonts.css?url'
+import readerFontsCss from '@/styles/reader-fonts.css?inline'
 
 // minWidth applies even to 'always': epub.js only switches to 2 columns once
 // the container is at least that wide (see Layout.calculate in its source),
@@ -149,9 +149,9 @@ function applyTheme(rendition: Rendition, theme: Theme) {
   rendition.spread(spread, minWidth)
 }
 
-// epub.js's addStylesheet never resolves if the stylesheet fails to load;
-// positioning against the fallback font beats an overlay that never clears.
-const STYLING_TIMEOUT_MS = 3000
+// A font request that hangs (flaky network) mustn't hold the loading overlay
+// forever; positioning against the fallback font beats that.
+const FONTS_TIMEOUT_MS = 3000
 const SETTLE_MAX_ATTEMPTS = 3
 
 function withTimeout(promise: Promise<unknown>, ms: number): Promise<unknown> {
@@ -178,23 +178,19 @@ function nextRelocation(rendition: Rendition, timeoutMs = 1000): Promise<void> {
   })
 }
 
-function waitForStyledContents(
-  rendition: Rendition,
-  stylesheets: WeakMap<Document, Promise<unknown>>
-): Promise<unknown> {
+function waitForFonts(rendition: Rendition): Promise<unknown> {
   const contentsList = rendition.getContents() as unknown as Contents[]
   return withTimeout(
     Promise.all(
-      contentsList.map(async ({ document: doc }) => {
+      contentsList.map(({ document: doc }) => {
         if (!doc) return
-        await stylesheets.get(doc)
         // Forces a layout pass so the fonts in use are actually requested —
         // otherwise fonts.ready can resolve before any of them starts loading.
         void doc.body?.offsetHeight
-        await doc.fonts?.ready
+        return doc.fonts?.ready
       })
     ),
-    STYLING_TIMEOUT_MS
+    FONTS_TIMEOUT_MS
   )
 }
 
@@ -223,14 +219,10 @@ function currentLocationOf(rendition: Rendition): Location | undefined {
 // the target again if it isn't on screen — within an already-rendered
 // section that only scrolls. Hrefs can't be checked like a CFI, so they're
 // re-displayed once.
-async function settleAt(
-  rendition: Rendition,
-  target: string,
-  stylesheets: WeakMap<Document, Promise<unknown>>
-): Promise<void> {
+async function settleAt(rendition: Rendition, target: string): Promise<void> {
   const isCfi = new EpubCFI().isCfiString(target)
   for (let attempt = 0; attempt < SETTLE_MAX_ATTEMPTS; attempt++) {
-    await waitForStyledContents(rendition, stylesheets)
+    await waitForFonts(rendition)
     await nextFrames(3)
     // destroy() clears `book`: the reader was closed mid-settle.
     if (!rendition.book) return
@@ -438,7 +430,6 @@ export default function Reader() {
   // relocations then are layout artefacts and must not be saved. A counter
   // because theme changes can overlap (slider drag).
   const settlingRef = useRef(0)
-  const stylesheetsRef = useRef(new WeakMap<Document, Promise<unknown>>())
   // Set by open(), which owns the locations Book the percentage comes from.
   const persistCurrentLocationRef = useRef<() => void>(() => {})
   const [loading, setLoading] = useState(true)
@@ -498,9 +489,11 @@ export default function Reader() {
 
       // The book's content renders in its own iframe document, which doesn't
       // inherit stylesheets from the main page — the palette fonts need to be
-      // injected directly into each rendered section.
+      // injected directly into each rendered section. Inline rather than a
+      // <link>: WebKit never fires `load` for a link inside epub.js's srcdoc
+      // iframe, so there'd be no way to know when its @font-face rules apply.
       rendition.hooks.content.register((contents: Contents) => {
-        stylesheetsRef.current.set(contents.document, contents.addStylesheet(readerFontsUrl))
+        contents.addStylesheetCss(readerFontsCss, 'reader-fonts')
         // Keydown events inside the iframe never reach the main document's
         // own listener (separate browsing context) — each rendered section
         // needs its own.
@@ -588,7 +581,7 @@ export default function Reader() {
       try {
         await rendition.display(savedCfi)
         await firstRelocation
-        if (savedCfi && !cancelled) await settleAt(rendition, savedCfi, stylesheetsRef.current)
+        if (savedCfi && !cancelled) await settleAt(rendition, savedCfi).catch(console.error)
       } finally {
         settlingRef.current--
       }
@@ -725,7 +718,7 @@ export default function Reader() {
     applyTheme(rendition, activeTheme)
     if (!cfi) return
     settlingRef.current++
-    settleAt(rendition, cfi, stylesheetsRef.current)
+    settleAt(rendition, cfi)
       .catch(console.error)
       .finally(() => settlingRef.current--)
   }, [activeTheme, loading])
@@ -739,7 +732,7 @@ export default function Reader() {
     if (!rendition) return
     rendition
       .display(target)
-      .then(() => settleAt(rendition, target, stylesheetsRef.current))
+      .then(() => settleAt(rendition, target))
       .then(() => persistCurrentLocationRef.current())
       .catch(console.error)
   }, [])
@@ -862,8 +855,13 @@ export default function Reader() {
       <div className="relative flex flex-1 overflow-hidden">
         {loading && (
           // z-10 because the arrows' opacity < 1 gives them their own stacking
-          // context, which would otherwise paint them over this overlay.
-          <div className="absolute inset-0 z-10 flex items-center justify-center text-muted-foreground">
+          // context, which would otherwise paint them over this overlay. Opaque
+          // because the book is already rendered underneath while its position
+          // is still being settled.
+          <div
+            className="absolute inset-0 z-10 flex items-center justify-center text-muted-foreground"
+            style={{ background: activeTheme.background }}
+          >
             Carregando livro...
           </div>
         )}
