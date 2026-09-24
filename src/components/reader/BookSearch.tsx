@@ -14,6 +14,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useThemeStore } from "@/store/theme-store";
+import { themeTint } from "@/lib/theme-colors";
 
 export interface SearchResult {
   cfi: string;
@@ -172,7 +173,7 @@ export default function BookSearch({
   // rather than the solid text color — the app's own default --ring/--border
   // are a soft mid-tone, and a full-strength theme color read as a much
   // harsher line than that default.
-  const ringColor = `color-mix(in oklab, ${activeTheme.textColor} 65%, ${activeTheme.background})`;
+  const ringColor = themeTint(activeTheme, 65);
   const themeVars = {
     background: activeTheme.background,
     color: activeTheme.textColor,
@@ -185,7 +186,11 @@ export default function BookSearch({
 
   return (
     <Sheet open={open} onOpenChange={handleOpenChange}>
-      <SheetContent side="left" className="max-sm:data-[side=left]:w-full" style={themeVars}>
+      <SheetContent
+        side="left"
+        className="data-[side=left]:border-r-0 max-sm:data-[side=left]:w-full"
+        style={themeVars}
+      >
         <SheetHeader>
           <SheetTitle>Buscar no livro</SheetTitle>
         </SheetHeader>

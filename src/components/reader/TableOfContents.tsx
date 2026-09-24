@@ -89,7 +89,11 @@ export default function TableOfContents({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="left" className="max-sm:data-[side=left]:w-full" style={themeVars}>
+      <SheetContent
+        side="left"
+        className="data-[side=left]:border-r-0 max-sm:data-[side=left]:w-full"
+        style={themeVars}
+      >
         <SheetHeader>
           <SheetTitle>Sumário</SheetTitle>
         </SheetHeader>

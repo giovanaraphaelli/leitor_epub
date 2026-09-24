@@ -26,6 +26,7 @@ import { isScreenWakeLockSupported } from "@/hooks/use-screen-wake-lock";
 import { PRESET_THEMES } from "@/lib/db/presets";
 import { FONT_OPTIONS } from "@/lib/db/fonts";
 import type { ColumnLayout } from "@/lib/db/schema";
+import { themeTint } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 // Plain import (not the `?inline` one Reader.tsx injects into the epub
 // iframe) so these fonts are also loaded for the previews below, which
@@ -37,11 +38,11 @@ export default function ReaderSettings() {
   const updateActiveTheme = useThemeStore((s) => s.updateActiveTheme);
   const keepScreenOn = useReadingPrefsStore((s) => s.keepScreenOn);
   const setKeepScreenOn = useReadingPrefsStore((s) => s.setKeepScreenOn);
-  // On a phone the panel comes up from the bottom over a see-through overlay,
-  // so the page stays visible while font size or spacing changes — a full
-  // side panel there would cover the very text being adjusted. The overlay
-  // still catches the tap that closes the panel, so that tap never reaches
-  // the page (where it would turn it).
+  // The overlay is see-through (no dim, no blur), so the page stays readable
+  // while font size or spacing changes — and on a phone the panel comes up
+  // from the bottom, since a side panel there would cover the very text being
+  // adjusted. The overlay still catches the click/tap that closes the panel,
+  // so it never reaches the page (where it would turn it).
   const isDesktop = useMediaQuery(DESKTOP_QUERY);
 
   // Sheet content renders through a portal to document.body, outside the
@@ -49,8 +50,12 @@ export default function ReaderSettings() {
   // --primary also needs overriding here (unlike Reader.tsx): the active
   // palette swatch's ring uses border-primary, and the global --primary is a
   // fixed dark color that disappears against a dark theme's own panel.
+  // A touch of the text color over the page background, so the panel reads as
+  // a surface above the book. It needs that instead of a border: the overlay
+  // is see-through, so a panel in the page's own color would dissolve into
+  // it — and a border line was what looked heavy.
   const themeVars = {
-    background: activeTheme.background,
+    background: themeTint(activeTheme, 5),
     color: activeTheme.textColor,
     "--foreground": activeTheme.textColor,
     "--muted-foreground": activeTheme.textColor,
@@ -62,6 +67,11 @@ export default function ReaderSettings() {
     // keeps the two controls' highlight colors consistent with each other.
     "--accent": `${activeTheme.textColor}1a`,
     "--accent-foreground": activeTheme.textColor,
+    // The font select outlines with --input (border-input) and the column
+    // toggles with --border; both were the app's fixed light gray, a bright
+    // ring on dark palettes.
+    "--border": themeTint(activeTheme, 20),
+    "--input": themeTint(activeTheme, 20),
   } as CSSProperties;
 
   return (
@@ -71,17 +81,17 @@ export default function ReaderSettings() {
           variant="ghost"
           size="icon"
           aria-label="Ajustes de leitura"
-          className="max-sm:size-11"
+          title="Ajustes de leitura"
+          className="max-sm:size-11 md:w-auto md:gap-1.5 md:px-2.5"
         >
           <Settings2 />
+          <span className="hidden md:inline">Ajustes</span>
         </Button>
       </SheetTrigger>
       <SheetContent
         side={isDesktop ? "right" : "bottom"}
-        overlayClassName={
-          isDesktop ? undefined : "bg-transparent supports-backdrop-filter:backdrop-blur-none"
-        }
-        className="data-[side=bottom]:max-h-[70dvh]"
+        overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none"
+        className="data-[side=bottom]:max-h-[70dvh] data-[side=bottom]:rounded-t-2xl data-[side=bottom]:border-t-0 data-[side=bottom]:shadow-[0_-8px_24px_-8px_rgb(0_0_0/0.2)] data-[side=right]:border-l-0 data-[side=right]:shadow-[-8px_0_24px_-8px_rgb(0_0_0/0.2)]"
         style={themeVars}
       >
         <SheetHeader>

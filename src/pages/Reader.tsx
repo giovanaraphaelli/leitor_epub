@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import ePub, {
   EpubCFI,
@@ -11,14 +11,18 @@ import ePub, {
 // Not re-exported from epub.js's main entry (unlike Book/Contents/NavItem/
 // Rendition above), so it's pulled straight from its own declaration file.
 import type Section from 'epubjs/types/section'
-import { ChevronLeft, ChevronRight, ArrowLeft, List, Search } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowLeft, List, Maximize, Minimize, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getBook } from '@/lib/db/books'
 import { getProgress, saveProgress } from '@/lib/db/progress'
+import { themeTint } from '@/lib/theme-colors'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/store/theme-store'
 import { useReadingPrefsStore } from '@/store/reading-prefs-store'
 import { useScreenWakeLock } from '@/hooks/use-screen-wake-lock'
+import { DESKTOP_QUERY, useMediaQuery } from '@/hooks/use-media-query'
+import { useElementWidth } from '@/hooks/use-element-width'
+import ProgressBar from '@/components/ProgressBar'
 import ReaderSettings from '@/components/reader/ReaderSettings'
 import TableOfContents from '@/components/reader/TableOfContents'
 import BookSearch, { type SearchResult } from '@/components/reader/BookSearch'
@@ -29,10 +33,35 @@ import readerFontsCss from '@/styles/reader-fonts.css?inline'
 // the container is at least that wide (see Layout.calculate in its source),
 // so a forced-double layout still falls back to a single column on a narrow
 // phone screen instead of squeezing two illegibly thin columns onto it.
+const SPREAD_MIN_WIDTH = 800
 const SPREAD_BY_COLUMNS: Record<ColumnLayout, { spread: string; minWidth: number }> = {
-  single: { spread: 'none', minWidth: 800 },
-  double: { spread: 'always', minWidth: 800 },
-  auto: { spread: 'auto', minWidth: 800 },
+  single: { spread: 'none', minWidth: SPREAD_MIN_WIDTH },
+  double: { spread: 'always', minWidth: SPREAD_MIN_WIDTH },
+  auto: { spread: 'auto', minWidth: SPREAD_MIN_WIDTH },
+}
+
+// About 70 characters of the reading font per line (45–75 is the comfortable
+// range) — in em, so the measure holds as the font size changes. Without a
+// cap, one column on a wide screen ran 126–197 characters per line.
+const LINE_MAX_EM = 32
+// ...but never narrower than that line at the default 18px: in em alone, the
+// smallest font squeezed the column to ~380px in the middle of a wide screen.
+// Below 18px a smaller font fits more words per line instead of a thinner column.
+const LINE_MIN_PX = LINE_MAX_EM * 18
+// Horizontal space the book row spends around the book itself: the two
+// page-turn margins at their narrowest (w-12) plus the wrapper's padding.
+const DESKTOP_FRAME_WIDTH = 2 * 48 + 24
+const MOBILE_FRAME_WIDTH = 16
+
+// Width to hand epub.js so its lines come out at LINE_MAX_EM. epub.js pads
+// each page by a twelfth of its container (the column gap, Layout.calculate)
+// and splits into two columns only from SPREAD_MIN_WIDTH up — so a 32em line
+// takes a container of 12/11 of that for one column and 12/5 for two.
+function bookWidthFor(available: number, theme: Theme): number {
+  const spread = theme.columns !== 'single' && available >= SPREAD_MIN_WIDTH
+  const line = Math.max(LINE_MAX_EM * theme.fontSize, LINE_MIN_PX)
+  const max = line * (spread ? 12 / 5 : 12 / 11)
+  return Math.floor(Math.min(available, max))
 }
 
 // TOC hrefs are relative to the nav document that declares them (e.g.
@@ -60,6 +89,15 @@ function resolveTocHref(book: EpubBook, href: string): string {
 
 function flattenNavItems(items: NavItem[]): NavItem[] {
   return items.flatMap((item) => [item, ...(item.subitems ? flattenNavItems(item.subitems) : [])])
+}
+
+// The top-level TOC entry holding the active one: subsections ("1.2 …") are
+// too fine-grained to label where the reader is in the header.
+function chapterLabelFor(toc: NavItem[], activeTocId?: string): string | undefined {
+  if (!activeTocId) return undefined
+  return toc
+    .find((item) => item.id === activeTocId || flattenNavItems(item.subitems ?? []).some((sub) => sub.id === activeTocId))
+    ?.label.trim()
 }
 
 // Labels a search result with the chapter it was found in. Deliberately
@@ -203,6 +241,21 @@ function locationContains(location: Location | undefined, cfi: string): boolean 
   return epubCfi.compare(cfi, location.start.cfi) >= 0 && epubCfi.compare(cfi, location.end.cfi) <= 0
 }
 
+// Whether the book is scrolled to a page boundary. A relayout that changes the
+// page width (a font size that widens the book) keeps the old scroll offset,
+// which then falls mid-page — a column cut at each edge — while the saved
+// position can still count as on screen. Reads epub.js's view manager, which
+// the .d.ts doesn't expose.
+function isPageAligned(rendition: Rendition): boolean {
+  const manager = (rendition as unknown as {
+    manager?: { container?: HTMLElement; layout?: { delta: number } }
+  }).manager
+  const delta = manager?.layout?.delta
+  if (!manager?.container || !delta) return true
+  const offset = Math.abs(manager.container.scrollLeft) % delta
+  return Math.min(offset, delta - offset) <= 1
+}
+
 // Unlike rendition.location, computed fresh: after a reflow the screen can
 // differ from the last position epub.js reported.
 function currentLocationOf(rendition: Rendition): Location | undefined {
@@ -219,9 +272,9 @@ function currentLocationOf(rendition: Rendition): Location | undefined {
 // under a fixed scroll offset, so the screen drifts away from the target and
 // epub.js never re-seeks. This waits for styling, gives epub.js a few frames
 // to re-expand the iframe (ResizeObserver + rAF on its side), and displays
-// the target again if it isn't on screen — within an already-rendered
-// section that only scrolls. Hrefs can't be checked like a CFI, so they're
-// re-displayed once.
+// the target again if it isn't on screen, or the page is misaligned — within
+// an already-rendered section that only scrolls, to a whole page. Hrefs can't
+// be checked like a CFI, so they're re-displayed once.
 async function settleAt(rendition: Rendition, target: string): Promise<void> {
   const isCfi = new EpubCFI().isCfiString(target)
   for (let attempt = 0; attempt < SETTLE_MAX_ATTEMPTS; attempt++) {
@@ -229,23 +282,112 @@ async function settleAt(rendition: Rendition, target: string): Promise<void> {
     await nextFrames(3)
     // destroy() clears `book`: the reader was closed mid-settle.
     if (!rendition.book) return
-    if (isCfi ? locationContains(currentLocationOf(rendition), target) : attempt > 0) return
+    const onTarget = isCfi ? locationContains(currentLocationOf(rendition), target) : attempt > 0
+    if (onTarget && isPageAligned(rendition)) return
     const relocated = nextRelocation(rendition)
     await rendition.display(target)
     await relocated
   }
 }
 
-// Skips page-turning when the key press originates inside the settings
-// sheet — Slider and ToggleGroup both use ArrowLeft/ArrowRight themselves
-// (to change a value or move focus between items), so turning the page at
-// the same time would fight the control being operated. This check is a
-// no-op for keydowns from inside the book's iframe (a separate document with
-// no sheet element in it), which is exactly where it should be a no-op.
-function handleArrowKeyNavigation(rendition: Rendition, event: KeyboardEvent) {
-  if (event.target instanceof Element && event.target.closest('[data-slot="sheet-content"]')) return
-  if (event.key === 'ArrowLeft') rendition.prev()
-  else if (event.key === 'ArrowRight') rendition.next()
+// The .d.ts requires width/height, but called without them epub.js
+// re-measures its container (Stage.size) — and does nothing if that size
+// hasn't changed.
+function remeasure(rendition: Rendition) {
+  ;(rendition as unknown as { resize(): void }).resize()
+}
+
+// Re-seeks the saved position after a relayout, one pass at a time. A request
+// arriving mid-pass (a font change that also resizes the book, the next step
+// of a slider drag) queues one follow-up pass instead of a second settleAt
+// whose display() calls would race the first one's.
+function createResettler(
+  rendition: Rendition,
+  anchor: () => string | undefined,
+  settling: { current: number }
+): () => void {
+  let running = false
+  let pending = false
+  return () => {
+    if (running) {
+      pending = true
+      return
+    }
+    running = true
+    settling.current++
+    void (async () => {
+      try {
+        do {
+          pending = false
+          const cfi = anchor()
+          if (cfi) await settleAt(rendition, cfi).catch(console.error)
+        } while (pending && rendition.book)
+      } finally {
+        running = false
+        settling.current--
+      }
+    })()
+  }
+}
+
+// Icon buttons (size="icon", a fixed square) that grow a text label from md.
+const LABELLED_BUTTON = 'md:w-auto md:gap-1.5 md:px-2.5'
+
+const isFullscreenSupported = typeof document !== 'undefined' && document.fullscreenEnabled
+
+function toggleFullscreen() {
+  const change = document.fullscreenElement
+    ? document.exitFullscreen()
+    : document.documentElement.requestFullscreen()
+  change.catch(() => {})
+}
+
+interface ReaderKeyActions {
+  next: () => void
+  prev: () => void
+  openSearch: () => void
+}
+
+// Arrows, PageUp/PageDown and Space (Shift+Space back) turn pages, "/" opens
+// the search, F toggles full screen. Left alone: anything with Ctrl/Cmd/Alt
+// (browser shortcuts), typing in a field, keys inside a sheet — Slider and
+// ToggleGroup use the arrows themselves, so turning the page at the same
+// time would fight the control being operated — and Space on a button or
+// link, where it means "press this". `closest` rather than `instanceof`
+// checks: keydowns from the book's iframe carry elements of that document's
+// realm, where an instanceof against this window's classes is always false.
+function handleReaderKeydown(event: KeyboardEvent, actions: ReaderKeyActions) {
+  if (event.ctrlKey || event.metaKey || event.altKey) return
+  const target = event.target as Element | null
+  const closest = (selector: string) => target?.closest?.(selector)
+  if (closest('[data-slot="sheet-content"], input, textarea, select, [contenteditable="true"]')) return
+
+  switch (event.key) {
+    case 'ArrowRight':
+    case 'PageDown':
+      actions.next()
+      break
+    case 'ArrowLeft':
+    case 'PageUp':
+      actions.prev()
+      break
+    case ' ':
+      if (closest('button, a[href]')) return
+      if (event.shiftKey) actions.prev()
+      else actions.next()
+      break
+    case '/':
+      actions.openSearch()
+      break
+    case 'f':
+    case 'F':
+      if (!isFullscreenSupported) return
+      toggleFullscreen()
+      break
+    default:
+      return
+  }
+  event.preventDefault()
 }
 
 const SWIPE_MIN_DISTANCE = 50
@@ -432,10 +574,12 @@ export default function Reader() {
   // The saved position. Re-seeks after a relayout aim here, not at what's on
   // screen — that's exactly what a relayout disturbs.
   const positionRef = useRef<Progress | null>(null)
-  // Non-zero while restoring on open or re-seeking after a theme change:
+  // Non-zero while restoring on open or re-seeking after a relayout:
   // relocations then are layout artefacts and must not be saved. A counter
-  // because theme changes can overlap (slider drag).
+  // because a re-seek can overlap a restore or a jump from the TOC.
   const settlingRef = useRef(0)
+  // Set by open() for its rendition (see createResettler).
+  const resettleRef = useRef<() => void>(() => {})
   // Set by open(), which owns the locations Book the percentage comes from.
   const persistCurrentLocationRef = useRef<() => void>(() => {})
   const [loading, setLoading] = useState(true)
@@ -454,6 +598,24 @@ export default function Reader() {
   const [barsHidden, setBarsHidden] = useState(false)
   const keepScreenOn = useReadingPrefsStore((s) => s.keepScreenOn)
   useScreenWakeLock(keepScreenOn)
+  const [isFullscreen, setIsFullscreen] = useState(() => !!document.fullscreenElement)
+  const isDesktop = useMediaQuery(DESKTOP_QUERY)
+  const bookRowRef = useRef<HTMLDivElement>(null)
+  const bookRowWidth = useElementWidth(bookRowRef)
+  // Stable, and reads everything through refs, so the listeners registered
+  // once (window, and each section's iframe inside open()) never go stale.
+  const keyActions = useMemo<ReaderKeyActions>(
+    () => ({
+      next: () => {
+        if (canPageRef.current) renditionRef.current?.next()
+      },
+      prev: () => {
+        if (canPageRef.current) renditionRef.current?.prev()
+      },
+      openSearch: () => setSearchOpen(true),
+    }),
+    []
+  )
   const activeTheme = useThemeStore((s) => s.activeTheme)
   // Tracks which (rendition, theme) pair has already been applied, so the
   // live-update effect below can tell "loading just flipped to false" apart
@@ -504,6 +666,20 @@ export default function Reader() {
       })
       renditionRef.current = rendition
 
+      const resettle = createResettler(
+        rendition,
+        () => positionRef.current?.cfi ?? rendition.location?.start?.cfi,
+        settlingRef
+      )
+      resettleRef.current = resettle
+      // After any relayout — epub.js's own on window resizes, or remeasure()
+      // for the rest. epub.js then re-displays the start of the page that was
+      // on screen, which after a relayout can be a page off the saved one.
+      // While opening, the restore below already settles on its own.
+      rendition.on('resized', () => {
+        if (canPageRef.current) resettle()
+      })
+
       // The book's content renders in its own iframe document, which doesn't
       // inherit stylesheets from the main page — the palette fonts need to be
       // injected directly into each rendered section. Inline rather than a
@@ -515,7 +691,7 @@ export default function Reader() {
         // own listener (separate browsing context) — each rendered section
         // needs its own.
         contents.document.addEventListener('keydown', (e: KeyboardEvent) =>
-          handleArrowKeyNavigation(rendition, e)
+          handleReaderKeydown(e, keyActions)
         )
         // Same reasoning for touch. No cleanup needed: epub.js tears down the
         // whole iframe document when it unrenders a section, taking its
@@ -640,6 +816,7 @@ export default function Reader() {
       cancelled = true
       persistCurrentLocationRef.current()
       persistCurrentLocationRef.current = () => {}
+      resettleRef.current = () => {}
       canPageRef.current = false
       renditionRef.current?.destroy()
       bookRef.current?.destroy()
@@ -671,12 +848,30 @@ export default function Reader() {
   // Covers keydowns that land on the main document instead of the book's
   // iframe — e.g. focus is on the header or nothing in particular.
   useEffect(() => {
-    function handleKeydown(e: KeyboardEvent) {
-      const rendition = canPageRef.current ? renditionRef.current : null
-      if (rendition) handleArrowKeyNavigation(rendition, e)
-    }
+    const handleKeydown = (e: KeyboardEvent) => handleReaderKeydown(e, keyActions)
     window.addEventListener('keydown', handleKeydown)
     return () => window.removeEventListener('keydown', handleKeydown)
+  }, [keyActions])
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement)
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  // epub.js re-lays itself out on window resizes only, but the book's width
+  // also changes with the font size and column mode (bookWidthFor). Any change
+  // to its container is handed to epub.js, which ignores same-size calls; its
+  // 'resized' event (see open()) re-seeks the saved position.
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer) return
+    const observer = new ResizeObserver(() => {
+      const rendition = renditionRef.current
+      if (rendition && canPageRef.current) remeasure(rendition)
+    })
+    observer.observe(viewer)
+    return () => observer.disconnect()
   }, [])
 
   // On a phone, closing the app is the page going hidden, after which it may
@@ -737,13 +932,8 @@ export default function Reader() {
     const applied = appliedThemeRef.current
     if (applied && applied.rendition === rendition && applied.theme === activeTheme) return
     appliedThemeRef.current = { rendition, theme: activeTheme }
-    const cfi = positionRef.current?.cfi ?? rendition.location?.start?.cfi
     applyTheme(rendition, activeTheme)
-    if (!cfi) return
-    settlingRef.current++
-    settleAt(rendition, cfi)
-      .catch(console.error)
-      .finally(() => settlingRef.current--)
+    resettleRef.current()
   }, [activeTheme, loading])
 
   // TOC entries and search results usually open another section, which has
@@ -823,13 +1013,26 @@ export default function Reader() {
   // icons unreadable (and hover backgrounds mismatched) against a dark theme.
   // Presets only ever use 6-digit hex colors, so appending an alpha suffix
   // for the hover background is safe.
+  // --border too: the header and bottom-bar dividers used the app's fixed
+  // light gray, which on a dark palette read as a bright line — and showed
+  // through the progress bar's translucent track, drowning out its fill.
+  // The progress bars' colors are opaque for the same reason (ProgressBar).
   const themeVars = {
     background: activeTheme.background,
     color: activeTheme.textColor,
     '--foreground': activeTheme.textColor,
     '--muted-foreground': activeTheme.textColor,
     '--muted': `${activeTheme.textColor}1a`,
+    '--border': themeTint(activeTheme, 15),
   } as CSSProperties
+
+  const chapterLabel = chapterLabelFor(toc, activeTocId)
+  const bookWidth =
+    bookRowWidth === undefined
+      ? undefined
+      : isDesktop
+        ? bookWidthFor(bookRowWidth - DESKTOP_FRAME_WIDTH, activeTheme) + 24
+        : bookWidthFor(bookRowWidth - MOBILE_FRAME_WIDTH, activeTheme) + MOBILE_FRAME_WIDTH
 
   // invisible (not just transparent) so hidden buttons can't be tapped.
   const bottomBarButtonClass = cn(
@@ -852,10 +1055,12 @@ export default function Reader() {
           screens, since absolute centering ignores the side groups' widths. */}
       {/* On phones this keeps only back, title and settings, at 44px (the
           touch-target size iOS and Android recommend); contents and search
-          move to the bottom bar. */}
+          move to the bottom bar. From md up the buttons (all but back) get
+          text labels, like the phone's bottom bar; the chapter shows from lg,
+          where it fits next to the title without truncating it. */}
       <header
         className={cn(
-          'grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b px-4 py-2 transition-[opacity,visibility] duration-200 max-sm:px-2 max-sm:py-1',
+          'relative grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b px-4 py-2 transition-[opacity,visibility] duration-200 max-sm:px-2 max-sm:py-1',
           barsHidden && 'max-sm:invisible max-sm:border-transparent max-sm:opacity-0'
         )}
       >
@@ -864,6 +1069,7 @@ export default function Reader() {
             variant="ghost"
             size="icon"
             aria-label="Voltar para a biblioteca"
+            title="Voltar para a biblioteca"
             className="max-sm:size-11"
             onClick={() => navigate('/')}
           >
@@ -873,29 +1079,57 @@ export default function Reader() {
             variant="ghost"
             size="icon"
             aria-label="Sumário"
-            className="hidden sm:inline-flex"
+            title="Sumário"
+            className={cn('hidden sm:inline-flex', LABELLED_BUTTON)}
             disabled={toc.length === 0}
             onClick={() => setTocOpen(true)}
           >
             <List />
+            <span className="hidden md:inline">Sumário</span>
           </Button>
           <Button
             variant="ghost"
             size="icon"
             aria-label="Buscar no livro"
-            className="hidden sm:inline-flex"
+            title="Buscar no livro (/)"
+            className={cn('hidden sm:inline-flex', LABELLED_BUTTON)}
             onClick={() => setSearchOpen(true)}
           >
             <Search />
+            <span className="hidden md:inline">Buscar</span>
           </Button>
         </div>
-        <span className="min-w-0 truncate text-center text-sm font-medium">{bookTitle}</span>
-        <div className="flex items-center justify-end gap-3">
+        <span className="min-w-0 truncate text-center text-sm font-medium">
+          {bookTitle}
+          {chapterLabel && (
+            <span className="hidden font-normal text-muted-foreground lg:inline"> · {chapterLabel}</span>
+          )}
+        </span>
+        <div className="flex items-center justify-end gap-1 sm:gap-2">
           {percentage !== undefined && (
-            <span className="hidden text-sm text-muted-foreground sm:inline">{percentage}%</span>
+            <span className="hidden px-1 text-sm text-muted-foreground sm:inline">{percentage}%</span>
+          )}
+          {isFullscreenSupported && (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+              title={`${isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'} (F)`}
+              className={cn('hidden sm:inline-flex', 'lg:w-auto lg:gap-1.5 lg:px-2.5')}
+              onClick={toggleFullscreen}
+            >
+              {isFullscreen ? <Minimize /> : <Maximize />}
+              <span className="hidden lg:inline">{isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}</span>
+            </Button>
           )}
           <ReaderSettings />
         </div>
+        <ProgressBar
+          aria-hidden
+          theme={activeTheme}
+          percentage={percentage ?? 0}
+          className="absolute inset-x-0 -bottom-px hidden h-0.5 sm:block"
+        />
       </header>
       <TableOfContents
         open={tocOpen}
@@ -919,9 +1153,12 @@ export default function Reader() {
           never run underneath them the way it could while they were absolutely
           positioned on top. It also keeps their width defined in one place
           instead of having to mirror it as padding on the book container.
-          They're hidden entirely on phones, where two strips cost ~16% of the
-          screen width and swiping replaces them (registerSwipeNavigation). */}
-      <div className="relative flex flex-1 overflow-hidden">
+          With the book capped to a comfortable line (bookWidthFor), they
+          stretch over the margins left beside it, so the whole margin turns
+          the page — not just a 48px strip. They're hidden entirely on phones,
+          where two strips cost ~16% of the screen width and swiping replaces
+          them (registerSwipeNavigation). */}
+      <div ref={bookRowRef} className="relative flex flex-1 overflow-hidden">
         {loading && (
           // z-10 because the arrows' opacity < 1 gives them their own stacking
           // context, which would otherwise paint them over this overlay. Opaque
@@ -936,9 +1173,10 @@ export default function Reader() {
         )}
         <button
           aria-label="Página anterior"
-          onClick={() => renditionRef.current?.prev()}
+          title="Página anterior (←)"
+          onClick={keyActions.prev}
           disabled={loading}
-          className="hidden w-12 shrink-0 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100 disabled:cursor-not-allowed sm:flex"
+          className="hidden min-w-12 flex-1 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100 disabled:cursor-not-allowed sm:flex"
         >
           <ChevronLeft />
         </button>
@@ -947,7 +1185,10 @@ export default function Reader() {
             epub.js: epub.js measures that element to size its columns, and
             clientWidth counts padding, so padding applied directly to it makes
             it lay out wider than the space it actually occupies. */}
-        <div className="relative min-w-0 flex-1 px-2 py-2 sm:px-3 sm:py-4">
+        <div
+          className="relative min-w-0 flex-1 px-2 py-2 sm:px-3 sm:py-4"
+          style={bookWidth === undefined ? undefined : { flex: `0 1 ${bookWidth}px` }}
+        >
           <div ref={viewerRef} className="h-full w-full" />
           {/* Gesture surface: transparent, covers the book, and is a sibling
               *after* the viewer so it paints over the iframe without needing a
@@ -969,9 +1210,10 @@ export default function Reader() {
 
         <button
           aria-label="Próxima página"
-          onClick={() => renditionRef.current?.next()}
+          title="Próxima página (→)"
+          onClick={keyActions.next}
           disabled={loading}
-          className="hidden w-12 shrink-0 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100 disabled:cursor-not-allowed sm:flex"
+          className="hidden min-w-12 flex-1 cursor-pointer items-center justify-center text-foreground opacity-50 transition-opacity hover:opacity-100 disabled:cursor-not-allowed sm:flex"
         >
           <ChevronRight />
         </button>
@@ -997,14 +1239,14 @@ export default function Reader() {
           Sumário
         </button>
         <div className="flex flex-col items-center gap-1.5 text-xs text-muted-foreground">
-          <div
+          <ProgressBar
+            theme={activeTheme}
+            percentage={percentage ?? 0}
             className={cn(
-              'h-1 w-16 overflow-hidden rounded-full bg-muted transition-[opacity,visibility] duration-200',
+              'h-1 w-16 rounded-full transition-[opacity,visibility] duration-200',
               barsHidden && 'invisible opacity-0'
             )}
-          >
-            <div className="h-full bg-foreground/60" style={{ width: `${percentage ?? 0}%` }} />
-          </div>
+          />
           <span>{percentage ?? 0}%</span>
         </div>
         <button type="button" onClick={() => setSearchOpen(true)} className={bottomBarButtonClass}>
