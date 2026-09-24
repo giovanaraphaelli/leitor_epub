@@ -11,11 +11,14 @@ import ePub, {
 // Not re-exported from epub.js's main entry (unlike Book/Contents/NavItem/
 // Rendition above), so it's pulled straight from its own declaration file.
 import type Section from 'epubjs/types/section'
-import { ChevronLeft, ChevronRight, ArrowLeft } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowLeft, List, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getBook } from '@/lib/db/books'
 import { getProgress, saveProgress } from '@/lib/db/progress'
+import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/store/theme-store'
+import { useReadingPrefsStore } from '@/store/reading-prefs-store'
+import { useScreenWakeLock } from '@/hooks/use-screen-wake-lock'
 import ReaderSettings from '@/components/reader/ReaderSettings'
 import TableOfContents from '@/components/reader/TableOfContents'
 import BookSearch, { type SearchResult } from '@/components/reader/BookSearch'
@@ -247,10 +250,11 @@ function handleArrowKeyNavigation(rendition: Rendition, event: KeyboardEvent) {
 
 const SWIPE_MIN_DISTANCE = 50
 // Anything that moves less than this in both axes is a tap, not a swipe that
-// fell short — the gesture surface forwards those to the book (see onTap).
+// fell short — the gesture surface hands those to onTap (links, then the
+// page-turn and show/hide-bars zones, see the surface's effect in Reader).
 const TAP_MAX_DISTANCE = 10
 
-// Swiping is the only way to turn pages on a phone: the arrow buttons are
+// Swiping (or tapping the sides) is how pages turn on a phone: the arrow buttons are
 // hidden below `sm` (they cost ~16% of the screen width there) and keyboard
 // shortcuts obviously don't apply. epub.js only ships swipe handling for its
 // `continuous` manager with `snap` enabled — this reader uses the `default`
@@ -368,8 +372,9 @@ function registerSwipeNavigation(
 // it — the surface is what receives the touch. epub.js assigns its own onclick
 // to every internal link when it renders a section (replaceLinks in its
 // source), so re-dispatching the click on whatever sits under the finger is
-// enough to keep footnote and cross-reference links working.
-function forwardTapToLink(viewer: HTMLElement, clientX: number, clientY: number) {
+// enough to keep footnote and cross-reference links working. Returns whether
+// there was a link, so the tap isn't also taken as a page turn.
+function forwardTapToLink(viewer: HTMLElement, clientX: number, clientY: number): boolean {
   for (const iframe of viewer.querySelectorAll<HTMLIFrameElement>('iframe')) {
     const doc = iframe.contentDocument
     if (!doc) continue
@@ -385,9 +390,10 @@ function forwardTapToLink(viewer: HTMLElement, clientX: number, clientY: number)
       ?.closest<HTMLAnchorElement>('a[href]')
     if (link) {
       link.click()
-      return
+      return true
     }
   }
+  return false
 }
 
 export default function Reader() {
@@ -437,6 +443,17 @@ export default function Reader() {
   const [activeTocId, setActiveTocId] = useState<string>()
   const [percentage, setPercentage] = useState<number>()
   const [bookTitle, setBookTitle] = useState<string>()
+  // Lifted here because each panel has two triggers: the header on desktop,
+  // the bottom bar on phones.
+  const [tocOpen, setTocOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  // Phones only (see the max-sm: classes on the bars): a tap on the middle of
+  // the page hides the bars. They keep their space while hidden, like in
+  // other e-book readers — letting the text grow into it would re-paginate
+  // the book on every tap and move the page under the reader's eyes.
+  const [barsHidden, setBarsHidden] = useState(false)
+  const keepScreenOn = useReadingPrefsStore((s) => s.keepScreenOn)
+  useScreenWakeLock(keepScreenOn)
   const activeTheme = useThemeStore((s) => s.activeTheme)
   // Tracks which (rendition, theme) pair has already been applied, so the
   // live-update effect below can tell "loading just flipped to false" apart
@@ -678,16 +695,22 @@ export default function Reader() {
   }, [])
 
   // The gesture surface over the book is where swipes are actually handled —
-  // see registerSwipeNavigation for why it isn't the book's iframe.
+  // see registerSwipeNavigation for why it isn't the book's iframe. Taps: a
+  // link under the finger wins; otherwise the left third of the page goes
+  // back, the right third forward, and the middle shows/hides the bars.
   useEffect(() => {
     const surface = swipeSurfaceRef.current
     const viewer = viewerRef.current
     if (!surface || !viewer) return
-    return registerSwipeNavigation(
-      surface,
-      () => (canPageRef.current ? renditionRef.current : null),
-      (clientX, clientY) => forwardTapToLink(viewer, clientX, clientY)
-    )
+    const pageable = () => (canPageRef.current ? renditionRef.current : null)
+    return registerSwipeNavigation(surface, pageable, (clientX, clientY) => {
+      if (forwardTapToLink(viewer, clientX, clientY)) return
+      const { left, width } = viewer.getBoundingClientRect()
+      const position = (clientX - left) / width
+      if (position < 1 / 3) pageable()?.prev()
+      else if (position > 2 / 3) pageable()?.next()
+      else setBarsHidden((hidden) => !hidden)
+    })
   }, [])
 
   // Handles live updates when the person changes the theme/settings panel
@@ -808,6 +831,12 @@ export default function Reader() {
     '--muted': `${activeTheme.textColor}1a`,
   } as CSSProperties
 
+  // invisible (not just transparent) so hidden buttons can't be tapped.
+  const bottomBarButtonClass = cn(
+    'flex h-14 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg text-xs text-foreground transition-[opacity,visibility] duration-200 disabled:cursor-not-allowed disabled:opacity-50',
+    barsHidden && 'invisible opacity-0'
+  )
+
   return (
     // h-dvh, not h-screen: 100vh on iOS measures the viewport as if the
     // browser's toolbars were hidden, so the reader ended up taller than the
@@ -821,29 +850,69 @@ export default function Reader() {
           actually shrinks to make room for the side groups — a long title
           plus the percentage badge could otherwise overlap on narrow phone
           screens, since absolute centering ignores the side groups' widths. */}
-      <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b px-4 py-2">
-        <div className="flex items-center">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
+      {/* On phones this keeps only back, title and settings, at 44px (the
+          touch-target size iOS and Android recommend); contents and search
+          move to the bottom bar. */}
+      <header
+        className={cn(
+          'grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b px-4 py-2 transition-[opacity,visibility] duration-200 max-sm:px-2 max-sm:py-1',
+          barsHidden && 'max-sm:invisible max-sm:border-transparent max-sm:opacity-0'
+        )}
+      >
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Voltar para a biblioteca"
+            className="max-sm:size-11"
+            onClick={() => navigate('/')}
+          >
             <ArrowLeft />
           </Button>
-          <TableOfContents
-            toc={toc}
-            activeTocId={activeTocId}
-            onNavigate={(href) => {
-              const book = bookRef.current
-              if (book) navigateTo(resolveTocHref(book, href))
-            }}
-          />
-          <BookSearch onSearch={performSearch} onNavigate={navigateTo} />
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Sumário"
+            className="hidden sm:inline-flex"
+            disabled={toc.length === 0}
+            onClick={() => setTocOpen(true)}
+          >
+            <List />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Buscar no livro"
+            className="hidden sm:inline-flex"
+            onClick={() => setSearchOpen(true)}
+          >
+            <Search />
+          </Button>
         </div>
         <span className="min-w-0 truncate text-center text-sm font-medium">{bookTitle}</span>
         <div className="flex items-center justify-end gap-3">
           {percentage !== undefined && (
-            <span className="text-sm text-muted-foreground">{percentage}%</span>
+            <span className="hidden text-sm text-muted-foreground sm:inline">{percentage}%</span>
           )}
           <ReaderSettings />
         </div>
       </header>
+      <TableOfContents
+        open={tocOpen}
+        onOpenChange={setTocOpen}
+        toc={toc}
+        activeTocId={activeTocId}
+        onNavigate={(href) => {
+          const book = bookRef.current
+          if (book) navigateTo(resolveTocHref(book, href))
+        }}
+      />
+      <BookSearch
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        onSearch={performSearch}
+        onNavigate={navigateTo}
+      />
 
       {/* The arrows are flex siblings of the book rather than floating over it:
           as real items they reserve their own width, so a line of text can
@@ -907,6 +976,42 @@ export default function Reader() {
           <ChevronRight />
         </button>
       </div>
+
+      {/* Phones only: the controls within thumb reach, with labels. While the
+          bars are hidden the percentage stays, as the only thing left on
+          screen besides the text. */}
+      <nav
+        aria-label="Navegação do livro"
+        className={cn(
+          'grid grid-cols-3 items-center border-t px-2 transition-colors duration-200 sm:hidden',
+          barsHidden && 'border-transparent'
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => setTocOpen(true)}
+          disabled={toc.length === 0}
+          className={bottomBarButtonClass}
+        >
+          <List className="size-5" />
+          Sumário
+        </button>
+        <div className="flex flex-col items-center gap-1.5 text-xs text-muted-foreground">
+          <div
+            className={cn(
+              'h-1 w-16 overflow-hidden rounded-full bg-muted transition-[opacity,visibility] duration-200',
+              barsHidden && 'invisible opacity-0'
+            )}
+          >
+            <div className="h-full bg-foreground/60" style={{ width: `${percentage ?? 0}%` }} />
+          </div>
+          <span>{percentage ?? 0}%</span>
+        </div>
+        <button type="button" onClick={() => setSearchOpen(true)} className={bottomBarButtonClass}>
+          <Search className="size-5" />
+          Buscar
+        </button>
+      </nav>
     </div>
   )
 }

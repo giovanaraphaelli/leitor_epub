@@ -1,18 +1,18 @@
-import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
-  SheetTrigger,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useThemeStore } from "@/store/theme-store";
 import type { NavItem } from "epubjs";
-import { BookOpen, List } from "lucide-react";
-import { useState, type CSSProperties } from "react";
+import { BookOpen } from "lucide-react";
+import type { CSSProperties } from "react";
 
 interface TableOfContentsProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   toc: NavItem[];
   activeTocId?: string;
   onNavigate: (href: string) => void;
@@ -37,7 +37,7 @@ function TocList({
               onClick={() => onNavigate(item.href)}
               aria-current={isActive ? "true" : undefined}
               className={cn(
-                "flex w-full cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted",
+                "flex w-full cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted max-sm:py-2.5",
                 isActive && "font-semibold",
               )}
             >
@@ -60,17 +60,20 @@ function TocList({
   );
 }
 
+// Open state lives in the reader, which has two triggers for this panel (the
+// header on desktop, the bottom bar on phones).
 export default function TableOfContents({
+  open,
+  onOpenChange,
   toc,
   activeTocId,
   onNavigate,
 }: TableOfContentsProps) {
-  const [open, setOpen] = useState(false);
   const activeTheme = useThemeStore((s) => s.activeTheme);
 
   function handleNavigate(href: string) {
     onNavigate(href);
-    setOpen(false);
+    onOpenChange(false);
   }
 
   // Sheet/Dialog content renders through a portal to document.body, outside
@@ -85,18 +88,8 @@ export default function TableOfContents({
   } as CSSProperties;
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Sumário"
-          disabled={toc.length === 0}
-        >
-          <List />
-        </Button>
-      </SheetTrigger>
-      <SheetContent side="left" style={themeVars}>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="left" className="max-sm:data-[side=left]:w-full" style={themeVars}>
         <SheetHeader>
           <SheetTitle>Sumário</SheetTitle>
         </SheetHeader>

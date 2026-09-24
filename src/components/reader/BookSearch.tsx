@@ -5,15 +5,13 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { Search, BookOpen, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { BookOpen, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
-  SheetTrigger,
 } from "@/components/ui/sheet";
 import { useThemeStore } from "@/store/theme-store";
 
@@ -24,6 +22,8 @@ export interface SearchResult {
 }
 
 interface BookSearchProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onSearch: (query: string) => Promise<SearchResult[]>;
   onNavigate: (cfi: string) => void;
 }
@@ -88,8 +88,14 @@ function groupByChapter(results: SearchResult[]): ResultGroup[] {
   return groups;
 }
 
-export default function BookSearch({ onSearch, onNavigate }: BookSearchProps) {
-  const [open, setOpen] = useState(false);
+// Open state lives in the reader, which has two triggers for this panel (the
+// header on desktop, the bottom bar on phones).
+export default function BookSearch({
+  open,
+  onOpenChange,
+  onSearch,
+  onNavigate,
+}: BookSearchProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>();
   // Which query `results` actually answers — compared against the live query
@@ -144,7 +150,7 @@ export default function BookSearch({ onSearch, onNavigate }: BookSearchProps) {
   // the X button) via onOpenChange, or by picking a result below, which
   // isn't a SheetClose and so never reaches onOpenChange on its own.
   function handleOpenChange(next: boolean) {
-    setOpen(next);
+    onOpenChange(next);
     if (!next) setQuery("");
   }
 
@@ -179,12 +185,7 @@ export default function BookSearch({ onSearch, onNavigate }: BookSearchProps) {
 
   return (
     <Sheet open={open} onOpenChange={handleOpenChange}>
-      <SheetTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Buscar no livro">
-          <Search />
-        </Button>
-      </SheetTrigger>
-      <SheetContent side="left" style={themeVars}>
+      <SheetContent side="left" className="max-sm:data-[side=left]:w-full" style={themeVars}>
         <SheetHeader>
           <SheetTitle>Buscar no livro</SheetTitle>
         </SheetHeader>

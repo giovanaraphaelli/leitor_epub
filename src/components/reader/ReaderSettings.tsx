@@ -3,6 +3,7 @@ import { Settings2, Columns2, Square, LayoutGrid, Check, Plus } from "lucide-rea
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Select,
@@ -19,11 +20,14 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { useThemeStore } from "@/store/theme-store";
+import { useReadingPrefsStore } from "@/store/reading-prefs-store";
+import { DESKTOP_QUERY, useMediaQuery } from "@/hooks/use-media-query";
+import { isScreenWakeLockSupported } from "@/hooks/use-screen-wake-lock";
 import { PRESET_THEMES } from "@/lib/db/presets";
 import { FONT_OPTIONS } from "@/lib/db/fonts";
 import type { ColumnLayout } from "@/lib/db/schema";
 import { cn } from "@/lib/utils";
-// Plain import (not the `?url` one Reader.tsx uses to inject into the epub
+// Plain import (not the `?inline` one Reader.tsx injects into the epub
 // iframe) so these fonts are also loaded for the previews below, which
 // render in the main document.
 import "@/styles/reader-fonts.css";
@@ -31,6 +35,14 @@ import "@/styles/reader-fonts.css";
 export default function ReaderSettings() {
   const activeTheme = useThemeStore((s) => s.activeTheme);
   const updateActiveTheme = useThemeStore((s) => s.updateActiveTheme);
+  const keepScreenOn = useReadingPrefsStore((s) => s.keepScreenOn);
+  const setKeepScreenOn = useReadingPrefsStore((s) => s.setKeepScreenOn);
+  // On a phone the panel comes up from the bottom over a see-through overlay,
+  // so the page stays visible while font size or spacing changes — a full
+  // side panel there would cover the very text being adjusted. The overlay
+  // still catches the tap that closes the panel, so that tap never reaches
+  // the page (where it would turn it).
+  const isDesktop = useMediaQuery(DESKTOP_QUERY);
 
   // Sheet content renders through a portal to document.body, outside the
   // reader's theme-scoped subtree — same reasoning as Reader.tsx's themeVars.
@@ -55,16 +67,28 @@ export default function ReaderSettings() {
   return (
     <Sheet>
       <SheetTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Ajustes de leitura">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Ajustes de leitura"
+          className="max-sm:size-11"
+        >
           <Settings2 />
         </Button>
       </SheetTrigger>
-      <SheetContent style={themeVars}>
+      <SheetContent
+        side={isDesktop ? "right" : "bottom"}
+        overlayClassName={
+          isDesktop ? undefined : "bg-transparent supports-backdrop-filter:backdrop-blur-none"
+        }
+        className="data-[side=bottom]:max-h-[70dvh]"
+        style={themeVars}
+      >
         <SheetHeader>
           <SheetTitle>Ajustes de leitura</SheetTitle>
         </SheetHeader>
 
-        <div className="flex flex-col gap-6 px-4">
+        <div className="flex flex-col gap-6 overflow-y-auto px-4 pb-6">
           <div className="flex flex-col gap-2">
             <Label>Paleta</Label>
             <div className="flex flex-wrap items-center gap-3">
@@ -243,6 +267,30 @@ export default function ReaderSettings() {
               }
             />
           </div>
+
+          {isScreenWakeLockSupported && (
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="keep-screen-on" className="cursor-pointer">
+                Manter a tela acesa durante a leitura
+              </Label>
+              {/* Track and thumb read --input/--background, which the sheet
+                  doesn't theme (only --primary, the "on" track): without
+                  these the thumb stayed white on a light track in dark
+                  palettes. */}
+              <Switch
+                id="keep-screen-on"
+                className="cursor-pointer"
+                style={
+                  {
+                    "--background": activeTheme.background,
+                    "--input": `${activeTheme.textColor}40`,
+                  } as CSSProperties
+                }
+                checked={keepScreenOn}
+                onCheckedChange={setKeepScreenOn}
+              />
+            </div>
+          )}
         </div>
       </SheetContent>
     </Sheet>
