@@ -4,7 +4,6 @@ import { RouterProvider } from 'react-router-dom'
 import './index.css'
 import { router } from '@/routes'
 import { useThemeStore } from '@/store/theme-store'
-import StatusBarTint from '@/components/StatusBarTint'
 
 // Awaited before the first render (not fired off in parallel with it): the
 // reader applies the active theme before its first `display()` to avoid a
@@ -14,17 +13,21 @@ import StatusBarTint from '@/components/StatusBarTint'
 // arrived a moment later and reflowed the already-settled page.
 await useThemeStore.getState().loadActiveTheme()
 
-// theme-color is what paints the status bar of the installed app (iOS 15+,
-// Android) and the title bar on desktop — kept on the page's background so
-// that strip follows the active theme instead of staying white.
+// Keeps the system bars on the active theme's background instead of white.
+// Android (and the desktop app's title bar) paint them from the theme-color
+// meta; iOS 26 ignores that meta and takes the body's background color — the
+// pages paint the theme on their own root divs, so without this the body
+// stayed white underneath and so did the iPhone's status bar.
 const themeColorMeta = document.querySelector('meta[name="theme-color"]')
-const syncThemeColor = (color: string) => themeColorMeta?.setAttribute('content', color)
-syncThemeColor(useThemeStore.getState().activeTheme.background)
-useThemeStore.subscribe((state) => syncThemeColor(state.activeTheme.background))
+function syncSystemBars(color: string) {
+  themeColorMeta?.setAttribute('content', color)
+  document.body.style.backgroundColor = color
+}
+syncSystemBars(useThemeStore.getState().activeTheme.background)
+useThemeStore.subscribe((state) => syncSystemBars(state.activeTheme.background))
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <StatusBarTint />
     <RouterProvider router={router} />
   </StrictMode>,
 )
