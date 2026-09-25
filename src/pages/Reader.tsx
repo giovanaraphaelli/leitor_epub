@@ -744,6 +744,27 @@ export default function Reader() {
       // iframe, so there'd be no way to know when its @font-face rules apply.
       rendition.hooks.content.register((contents: Contents) => {
         contents.addStylesheetCss(readerFontsCss, 'reader-fonts')
+        // Those fonts load asynchronously (slowly on iOS), and one landing
+        // after the section is laid out reflows it into more or fewer pages —
+        // which epub.js never notices: its font listener is commented out in
+        // 0.3.93, and its ResizeObserver watches the <html> box, which the
+        // columns overflowing sideways don't change. The view kept its old
+        // width, cutting off the chapter's last pages, and going back into a
+        // chapter landed pages before its end. resizeCheck() re-measures and
+        // re-expands the view (keeping a chapter entered backwards at its end,
+        // see `counter` in epub.js's default manager); reporting afterwards
+        // saves the page now on screen. Each face's own `loaded` rather than
+        // the set's `loadingdone`, which WebKit doesn't fire for fonts that
+        // CSS requested — and it also covers a face first used after a
+        // palette change.
+        const refit = () => {
+          if (!rendition.book) return
+          ;(contents as unknown as { resizeCheck(): void }).resizeCheck()
+          void rendition.reportLocation()
+        }
+        contents.document.fonts?.forEach((face) => {
+          face.loaded.then(refit, () => {})
+        })
         // Keydown events inside the iframe never reach the main document's
         // own listener (separate browsing context) — each rendered section
         // needs its own.
