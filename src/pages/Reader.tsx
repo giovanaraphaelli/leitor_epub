@@ -256,6 +256,63 @@ function isPageAligned(rendition: Rendition): boolean {
   return Math.min(offset, delta - offset) <= 1
 }
 
+// The part of epub.js's view manager that snapPageTurns reads and replaces.
+interface PagingManager {
+  container: HTMLElement
+  layout: { delta: number }
+  isPaginated: boolean
+  settings: { axis?: string; direction?: string }
+  next(): Promise<void> | undefined
+  prev(): Promise<void> | undefined
+  scrollTo(x: number, y: number, silent?: boolean): void
+}
+
+// epub.js turns a page inside a chapter with `scrollLeft += pageWidth`, and
+// moves on to the next chapter once scrollLeft plus two pages passes the
+// chapter's width — an exact comparison. With a fractional devicePixelRatio
+// (2.625, 2.75… — common on Android) the browser snaps every scroll offset to
+// a device pixel, so each turn leaves a sliver of error that the next one
+// adds to; on the second-to-last page that sliver fails the comparison and
+// the last page of every chapter was skipped. Here the page on screen is
+// rounded from the offset and the scroll lands on an exact multiple of the
+// page width. Changing chapters is still left to epub.js.
+function snapPageTurns(rendition: Rendition) {
+  const manager = (rendition as unknown as { manager?: PagingManager }).manager
+  if (!manager) return
+  const { next, prev } = manager
+  const { container } = manager
+  const pagedLtr = () =>
+    manager.isPaginated &&
+    manager.settings.axis === 'horizontal' &&
+    (!manager.settings.direction || manager.settings.direction === 'ltr') &&
+    manager.layout.delta > 0
+  const currentPage = () => Math.round(container.scrollLeft / manager.layout.delta)
+
+  manager.next = () => {
+    if (!pagedLtr()) return next.call(manager)
+    const { delta } = manager.layout
+    const page = currentPage()
+    if ((page + 1) * delta + container.offsetWidth <= container.scrollWidth) {
+      manager.scrollTo((page + 1) * delta, 0, true)
+      return
+    }
+    return next.call(manager)
+  }
+
+  manager.prev = () => {
+    if (!pagedLtr()) return prev.call(manager)
+    const page = currentPage()
+    if (page > 0) {
+      manager.scrollTo((page - 1) * manager.layout.delta, 0, true)
+      return
+    }
+    // Any sliver left reads as "not at the start yet" to epub.js, which would
+    // scroll back by a page instead of opening the previous chapter.
+    if (container.scrollLeft !== 0) manager.scrollTo(0, 0, true)
+    return prev.call(manager)
+  }
+}
+
 // Unlike rendition.location, computed fresh: after a reflow the screen can
 // differ from the last position epub.js reported.
 function currentLocationOf(rendition: Rendition): Location | undefined {
@@ -780,7 +837,10 @@ export default function Reader() {
       }
       // The view manager is attached and a page is on screen, so the
       // page-turn controls (buttons, arrow keys, swipe) are safe to use now.
-      if (!cancelled) canPageRef.current = true
+      if (!cancelled) {
+        snapPageTurns(rendition)
+        canPageRef.current = true
+      }
 
       // If locationsBook finishes generating after the initial display, the
       // relocated event above had nothing to compute percentage from yet.
