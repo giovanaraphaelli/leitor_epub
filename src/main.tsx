@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from 'react-router-dom'
+import { registerSW } from 'virtual:pwa-register'
 import './index.css'
 import { router } from '@/routes'
 import { useThemeStore } from '@/store/theme-store'
@@ -35,3 +36,5 @@ createRoot(document.getElementById('root')!).render(
     <RouterProvider router={router} />
   </StrictMode>,
 )
+
+registerSW({ immediate: true })
