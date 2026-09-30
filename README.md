@@ -33,7 +33,7 @@ Mais detalhes de arquitetura em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Instalar como app
 
-O site é instalável (PWA): no Chrome do computador ou do Android, pelo ícone de instalar na barra de endereço ou em "Instalar app" no menu; no iPhone, pelo menu Compartilhar → "Adicionar à Tela de Início". Abre em janela própria, sem a barra do navegador. Ainda precisa de internet para abrir (não há modo offline).
+O site é instalável (PWA): no Chrome do computador ou do Android, pelo ícone de instalar na barra de endereço ou em "Instalar app" no menu; no iPhone, pelo menu Compartilhar → "Adicionar à Tela de Início". Abre em janela própria, sem a barra do navegador. Depois da primeira visita funciona offline: o Service Worker guarda o app no cache e atualiza sozinho quando há versão nova.
 
 No iPhone, o app da Tela de Início guarda os dados separado do navegador: livros importados no Safari ou no Chrome não aparecem nele, e é preciso importá-los de novo dentro do app. No computador e no Android, app e navegador compartilham os mesmos livros.
 
@@ -67,7 +67,7 @@ npm run dev
 - [ ] Empty states e ilustrações
 - [x] Responsividade mobile
 - [x] Busca dentro do livro
-- [x] Instalável como app (PWA, sem modo offline)
+- [x] Instalável como app (PWA) e funcionando offline
 - [x] Editar título, autor e capa; exportar o EPUB
 
 ### Fase 4 — Em definição
