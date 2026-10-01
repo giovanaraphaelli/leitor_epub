@@ -17,8 +17,9 @@ export async function updateBook(id: string, changes: Partial<Omit<Book, 'id'>>)
 }
 
 export async function removeBook(id: string): Promise<void> {
-  await db.transaction('rw', db.books, db.progress, async () => {
+  await db.transaction('rw', db.books, db.progress, db.highlights, async () => {
     await db.books.delete(id)
     await db.progress.delete(id)
+    await db.highlights.where('bookId').equals(id).delete()
   })
 }

@@ -17,6 +17,7 @@ npm run dev            # servidor de desenvolvimento
 npm run build          # type-check (tsc -b) + build de produção
 npm run lint           # eslint .
 npm run preview        # preview do build de produção
+npm test               # testes (Vitest: lógica pura e repositórios)
 npm run epub:generate  # regera fixtures/livro-de-teste.epub
 npm run epub:validate  # valida o fixture (aceita outro caminho como argumento)
 ```
@@ -39,6 +40,7 @@ vem junto do epub.js.
 - `src/components/ui/**` é código gerado pela CLI do shadcn (`npx shadcn@latest add <componente>`) — não editar à mão além de ajustes pontuais de estilo; para mudanças maiores, regenerar via CLI. Essa pasta tem uma exceção de lint (`react-refresh/only-export-components` desligada) em `eslint.config.js`.
 - Persistência: tudo passa pelos repositórios em `src/lib/db/` (`books.ts`, `progress.ts`, `themes.ts`) — não acessar `db.*` (Dexie) diretamente fora dessa camada.
 - Estado global (tema ativo, etc.) fica em `src/store/` (Zustand). Estado de UI local continua com `useState`/`useRef` nos próprios componentes.
+- Testes (`*.test.ts`, ao lado do código) cobrem só lógica pura e os repositórios de `src/lib/db/` (com `fake-indexeddb`); o que depende do DOM do epub.js ou do toque se verifica no navegador.
 - Sem comentários explicando o óbvio — só quando houver uma razão não evidente (ex: por que uma versão de lib foi fixada).
 - Todo elemento clicável (botão, link, item de lista clicável, card usado como botão) leva `cursor-pointer` — `<button>` não tem isso por padrão no navegador. Estados desabilitados usam `cursor-not-allowed`. O componente base `Button` (`src/components/ui/button.tsx`) e `Toggle`/`ToggleGroupItem` já aplicam isso globalmente; elementos clicáveis feitos à mão (botão nativo, `<div role="button">`) precisam da classe explícita.
 
