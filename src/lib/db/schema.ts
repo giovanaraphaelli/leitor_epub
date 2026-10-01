@@ -16,6 +16,15 @@ export interface Progress {
   lastReadAt: number
 }
 
+export interface Highlight {
+  id: string
+  bookId: string
+  cfiRange: string
+  text: string
+  color: string
+  createdAt: number
+}
+
 export type ColumnLayout = 'auto' | 'single' | 'double'
 
 export interface Theme {
@@ -40,6 +49,7 @@ export class LeitorEpubDB extends Dexie {
   progress!: EntityTable<Progress, 'bookId'>
   themes!: EntityTable<Theme, 'id'>
   settings!: EntityTable<Setting, 'key'>
+  highlights!: EntityTable<Highlight, 'id'>
 
   constructor() {
     super('leitor-epub')
@@ -49,6 +59,10 @@ export class LeitorEpubDB extends Dexie {
       progress: 'bookId, lastReadAt',
       themes: 'id, name, isPreset',
       settings: 'key',
+    })
+
+    this.version(2).stores({
+      highlights: 'id, bookId, createdAt',
     })
   }
 }
