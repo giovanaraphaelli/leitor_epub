@@ -29,6 +29,7 @@
     "epubjs": "^0.3.93",
     "jszip": "^3.10.2",
     "lucide-react": "^1.26.0",
+    "marks-pane": "^1.0.9",
     "radix-ui": "^1.6.5",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

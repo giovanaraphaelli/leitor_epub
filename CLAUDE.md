@@ -38,7 +38,7 @@ vem junto do epub.js.
 
 - Alias `@/*` aponta para `src/*` (configurado em `tsconfig.json`, `tsconfig.app.json` e `vite.config.ts`).
 - `src/components/ui/**` é código gerado pela CLI do shadcn (`npx shadcn@latest add <componente>`) — não editar à mão além de ajustes pontuais de estilo; para mudanças maiores, regenerar via CLI. Essa pasta tem uma exceção de lint (`react-refresh/only-export-components` desligada) em `eslint.config.js`.
-- Persistência: tudo passa pelos repositórios em `src/lib/db/` (`books.ts`, `progress.ts`, `themes.ts`) — não acessar `db.*` (Dexie) diretamente fora dessa camada.
+- Persistência: tudo passa pelos repositórios em `src/lib/db/` (`books.ts`, `progress.ts`, `themes.ts`, `highlights.ts`) — não acessar `db.*` (Dexie) diretamente fora dessa camada.
 - Estado global (tema ativo, etc.) fica em `src/store/` (Zustand). Estado de UI local continua com `useState`/`useRef` nos próprios componentes.
 - Testes (`*.test.ts`, ao lado do código) cobrem só lógica pura e os repositórios de `src/lib/db/` (com `fake-indexeddb`); o que depende do DOM do epub.js ou do toque se verifica no navegador.
 - Sem comentários explicando o óbvio — só quando houver uma razão não evidente (ex: por que uma versão de lib foi fixada).
