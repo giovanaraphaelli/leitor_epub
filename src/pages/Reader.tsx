@@ -24,8 +24,8 @@ import {
   hasSelection,
   highlightAtPoint,
   highlightRange,
-  selectWordAt,
-  sheetSideFor,
+  rangeViewportRect,
+  repaintHighlights,
 } from '@/lib/reader/selection'
 import { themeTint } from '@/lib/theme-colors'
 import { cn } from '@/lib/utils'
@@ -38,10 +38,8 @@ import ProgressBar from '@/components/ProgressBar'
 import ReaderSettings from '@/components/reader/ReaderSettings'
 import TableOfContents from '@/components/reader/TableOfContents'
 import BookSearch, { type SearchResult } from '@/components/reader/BookSearch'
-import SelectionSheet, {
-  type SelectionSheetMode,
-  type SelectionSheetSide,
-} from '@/components/reader/SelectionSheet'
+import SelectionPopover, { type SelectionPopoverMode } from '@/components/reader/SelectionPopover'
+import type { Box } from '@/lib/reader/popover-position'
 import type { ColumnLayout, Highlight, Progress, Theme } from '@/lib/db/schema'
 import readerFontsCss from '@/styles/reader-fonts.css?inline'
 
@@ -467,25 +465,35 @@ const SWIPE_MIN_DISTANCE = 50
 // Anything that moves less than this in both axes is a tap, not a swipe that
 // fell short — the gesture surface hands those to onTap (links, then the
 // page-turn and show/hide-bars zones, see the surface's effect in Reader).
-// It's also how far a resting finger may drift and still make a long press.
+// It's also how far a finger may drift and still count as resting.
 const TAP_MAX_DISTANCE = 10
-// How long a finger has to rest on the page before it starts a text selection.
-const LONG_PRESS_MS = 450
+// How long a finger may rest on the page before the surface lets the touch
+// through to the book, where the system's own long press then selects the
+// word. Shorter than the system's (400-500 ms on Android), or the long press
+// would still land on the surface.
+const REST_PASS_MS = 300
+// A touch on the surface that never reports its end (an edge swipe, an app
+// switch) stops holding the surface off after this long — far past the
+// system's long press, which has landed or won't by then.
+const TOUCH_GUARD_MS = 2000
 
 const HIGHLIGHT_COLOR = '#fac73c'
-// epub.js draws these as attributes of the highlight's SVG shapes; its own
-// defaults (the blend mode among them) stay for everything not named here.
-const HIGHLIGHT_STYLES = { fill: HIGHLIGHT_COLOR, 'fill-opacity': '0.45' }
+// epub.js draws these as attributes of the highlight's SVG group; its own
+// defaults (the blend mode among them) stay for everything not named here. The
+// opacity is the group's, not each shape's: shapes that overlap (one line's
+// box over the next's) must not add up to a darker patch.
+const HIGHLIGHT_STYLES = { fill: HIGHLIGHT_COLOR, 'fill-opacity': '1', opacity: '0.45' }
 
-// The sheet over the book: either what was just selected or a highlight that
-// was tapped. It's kept (with open: false) while it animates out, so its text
-// doesn't blank mid-slide.
-interface SheetState {
-  open: boolean
-  mode: SelectionSheetMode
-  side: SelectionSheetSide
+// The popover over the book: either what was just selected or a highlight that
+// was tapped. It's hidden (visible: false) while a selection is being
+// adjusted, and comes back, in its new place, once the selection settles.
+interface PopoverState {
+  mode: SelectionPopoverMode
   text: string
   cfiRange: string
+  // The text's box on screen; the popover sits against it.
+  anchor: Box
+  visible: boolean
 }
 
 // Swiping (or tapping the sides) is how pages turn on a phone: the arrow buttons are
@@ -508,10 +516,8 @@ interface SheetState {
 //     epub.js writes one declaring a width far narrower than the iframe it
 //     renders into, and engines disagree about what to do with that.
 // The in-iframe registration stays as a fallback for input setups where the
-// surface isn't mounted at all (see isTouchDevice), and it's also what takes a
-// swipe while a text selection is up, since the surface steps aside then
-// (pointer-events: none) for the selection handles. Otherwise the two never
-// both fire: a mounted surface is what receives the touch instead of the iframe.
+// surface isn't mounted at all (see isTouchDevice); the two never both fire,
+// since a mounted surface is what receives the touch instead of the iframe.
 // There it has to target `document.documentElement` rather than `document`:
 // registering on both would double-fire, since the event bubbles through
 // documentElement and then document, and each registration keeps its own
@@ -522,10 +528,9 @@ function registerSwipeNavigation(
   target: EventTarget,
   getRendition: () => Rendition | null,
   onTap?: (clientX: number, clientY: number) => void,
-  // Returns whether it took the gesture (say, it selected a word). Only then
-  // does lifting the finger count as neither a tap nor a swipe; otherwise a
-  // slow tap still turns the page as before.
-  onLongPress?: (clientX: number, clientY: number) => boolean
+  // Called once when the finger has rested (REST_PASS_MS without moving). The
+  // gesture is then the book's, so lifting counts as neither a tap nor a swipe.
+  onRest?: () => void
 ) {
   let startX = 0
   let startY = 0
@@ -533,8 +538,6 @@ function registerSwipeNavigation(
   let lastY = 0
   let tracking = false
   let pressTimer: ReturnType<typeof setTimeout> | undefined
-  // From a long press taking the gesture until that touch ends.
-  let pressTaken = false
   const cancelPress = () => {
     clearTimeout(pressTimer)
     pressTimer = undefined
@@ -542,7 +545,6 @@ function registerSwipeNavigation(
 
   function onTouchStart(event: Event) {
     cancelPress()
-    pressTaken = false
     const { touches, changedTouches } = event as TouchEvent
     // A second finger means a pinch, not a page turn.
     if (touches.length !== 1) {
@@ -552,14 +554,13 @@ function registerSwipeNavigation(
     tracking = true
     startX = lastX = changedTouches[0].clientX
     startY = lastY = changedTouches[0].clientY
-    if (onLongPress) {
+    if (onRest) {
       pressTimer = setTimeout(() => {
         pressTimer = undefined
-        if (tracking && onLongPress(startX, startY)) {
-          tracking = false
-          pressTaken = true
-        }
-      }, LONG_PRESS_MS)
+        if (!tracking) return
+        tracking = false
+        onRest()
+      }, REST_PASS_MS)
     }
   }
 
@@ -607,16 +608,6 @@ function registerSwipeNavigation(
   }
 
   function onTouchEnd(event: Event) {
-    // Lifting the finger would still become a click, hit-tested only then —
-    // after the surface has stepped aside for the selection (see Reader), so it
-    // would land in the book, collapsing the selection or following a link.
-    // Cancelling touchend is what keeps the browser from sending it. Once the
-    // finger has dragged, the browser may have taken the touch for a scroll and
-    // the event is no longer cancelable (no click follows then either).
-    if (pressTaken) {
-      pressTaken = false
-      if (event.cancelable) event.preventDefault()
-    }
     const touch = (event as TouchEvent).changedTouches?.[0]
     if (tracking && touch) {
       lastX = touch.clientX
@@ -625,16 +616,11 @@ function registerSwipeNavigation(
     settle('end')
   }
 
-  const onTouchCancel = () => {
-    pressTaken = false
-    settle('cancel')
-  }
+  const onTouchCancel = () => settle('cancel')
 
   target.addEventListener('touchstart', onTouchStart, { passive: true })
   target.addEventListener('touchmove', onTouchMove, { passive: true })
-  // Not passive when a long press is wired up: a passive listener can't cancel
-  // the event (see onTouchEnd). The in-iframe fallback has none and stays passive.
-  target.addEventListener('touchend', onTouchEnd, { passive: !onLongPress })
+  target.addEventListener('touchend', onTouchEnd, { passive: true })
   target.addEventListener('touchcancel', onTouchCancel, { passive: true })
 
   return () => {
@@ -735,23 +721,32 @@ export default function Reader() {
   // other e-book readers — letting the text grow into it would re-paginate
   // the book on every tap and move the page under the reader's eyes.
   const [barsHidden, setBarsHidden] = useState(false)
-  // True from a long press until the selection is gone. While it is, the
-  // gesture surface steps aside so the browser's own selection handles can be
-  // dragged to extend the text.
-  const [selecting, setSelecting] = useState(false)
-  const [sheet, setSheet] = useState<SheetState | null>(null)
+  const [popover, setPopover] = useState<PopoverState | null>(null)
+  // Read by the surface's tap callback, which is registered once.
+  const popoverRef = useRef<PopoverState | null>(null)
+  useEffect(() => {
+    popoverRef.current = popover
+  }, [popover])
+  // When the touch now on the surface began; 0 once it has ended.
+  const touchStartedAtRef = useRef(0)
+
+  // The surface goes back over the book once nothing is selected, unless a touch
+  // that began on it is still down (the system's long press hasn't landed yet).
+  const releaseSurface = useCallback(() => {
+    const startedAt = touchStartedAtRef.current
+    if (startedAt && Date.now() - startedAt < TOUCH_GUARD_MS) return
+    swipeSurfaceRef.current?.style.removeProperty('pointer-events')
+  }, [])
 
   const openHighlight = useCallback((cfiRange: string) => {
     const highlight = highlightsRef.current.find((item) => item.cfiRange === cfiRange)
     if (!highlight) return
     const range = renditionRef.current ? highlightRange(renditionRef.current, cfiRange) : undefined
-    setSheet({
-      open: true,
-      mode: 'highlight',
-      side: range ? sheetSideFor(range) : 'bottom',
-      text: highlight.text,
-      cfiRange,
-    })
+    const anchor = range ? rangeViewportRect(range) : null
+    if (!anchor) return
+    // A toast could sit over the popover's buttons and swallow the tap.
+    toast.dismiss()
+    setPopover({ mode: 'highlight', text: highlight.text, cfiRange, anchor, visible: true })
   }, [])
 
   const paintHighlight = useCallback(
@@ -761,6 +756,9 @@ export default function Reader() {
         {},
         (event: Event) => {
           event.stopPropagation()
+          // The mouse-up that ends a drag over a highlight clicks it before the
+          // selection is reported; the selection popover is the one to show.
+          if (viewerRef.current && hasSelection(viewerRef.current)) return
           openHighlight(cfiRange)
         },
         'reader-highlight',
@@ -852,22 +850,21 @@ export default function Reader() {
       rendition.on('resized', () => {
         if (canPageRef.current) resettle()
       })
-      // Emitted by epub.js (debounced) for any non-collapsed selection, with
-      // the CFI already computed: a mouse drag on desktop, a long press plus
-      // the handles on a phone. Dragging a handle keeps coming through here,
-      // and the sheet follows without changing the side it opened on.
+      // Emitted by epub.js (debounced, 250 ms after the last change) for any
+      // non-collapsed selection, with the CFI already computed: a mouse drag on
+      // desktop, the system's own long press plus its handles on a phone. It's
+      // what brings the popover up, and back after the handles are dragged.
       rendition.on('selected', (cfiRange: string, contents: Contents) => {
         const selection = contents.window.getSelection()
         // Soft hyphens (U+00AD) of pre-hyphenated books come along in the
         // selected text; they'd end up invisible inside what's copied or saved.
         const text = selection?.toString().replace(/\u00AD/g, '').trim()
         if (!selection || !text) return
-        const side = sheetSideFor(selection.getRangeAt(0))
-        setSheet((current) =>
-          current?.open && current.mode === 'selection'
-            ? { ...current, text, cfiRange }
-            : { open: true, mode: 'selection', side, text, cfiRange }
-        )
+        const anchor = rangeViewportRect(selection.getRangeAt(0))
+        if (!anchor) return
+        // A toast could sit over the popover's buttons and swallow the tap.
+        toast.dismiss()
+        setPopover({ mode: 'selection', text, cfiRange, anchor, visible: true })
       })
 
       // The book's content renders in its own iframe document, which doesn't
@@ -910,16 +907,24 @@ export default function Reader() {
         registerSwipeNavigation(contents.document.documentElement, () =>
           canPageRef.current ? rendition : null
         )
-        // A collapsed selection (a tap elsewhere) ends the selection mode and
-        // gives the surface back its touches.
+        // A collapsed selection (a tap on text, a click elsewhere on desktop, or
+        // the reader clearing it) closes the popover that was showing it and puts
+        // the surface back over the book. A selection that's still there but
+        // changing (a handle being dragged) only hides the popover until it settles.
         contents.document.addEventListener('selectionchange', () => {
           const selection = contents.document.getSelection()
           if (!selection || selection.isCollapsed) {
-            setSelecting(false)
-            setSheet((current) =>
-              current?.open && current.mode === 'selection' ? { ...current, open: false } : current
+            releaseSurface()
+            setPopover((current) => (current?.mode === 'selection' ? null : current))
+          } else {
+            setPopover((current) =>
+              current?.mode === 'selection' && current.visible ? { ...current, visible: false } : current
             )
           }
+        })
+        // Any press inside the book is outside the popover.
+        contents.document.addEventListener('pointerdown', () => {
+          setPopover((current) => (current?.mode === 'highlight' ? null : current))
         })
       })
 
@@ -929,7 +934,14 @@ export default function Reader() {
       const savedHighlights = await listHighlights(bookId!)
       if (cancelled) return
       highlightsRef.current = savedHighlights
-      for (const highlight of savedHighlights) paintHighlight(highlight.cfiRange)
+      for (const highlight of savedHighlights) {
+        // One position epub.js can't resolve must not keep the book from opening.
+        try {
+          paintHighlight(highlight.cfiRange)
+        } catch (error) {
+          console.error('Grifo ignorado: posição inválida', highlight.id, error)
+        }
+      }
 
       const progress = await getProgress(bookId!)
       if (cancelled) return
@@ -1004,14 +1016,23 @@ export default function Reader() {
       // with it.
       let shownCfi: string | undefined
       rendition.on('relocated', (location: Location) => {
+        // Every reflow (a font swap, fonts arriving late, a theme change) ends in
+        // a relocation, and may have moved the text under the highlights.
+        repaintHighlights(rendition)
         const viewer = viewerRef.current
         if (!viewer) return
         if (location.start.cfi !== shownCfi) {
           shownCfi = location.start.cfi
           clearSelections(viewer)
-          setSheet((current) => (current?.open ? { ...current, open: false } : current))
+          setPopover(null)
         }
-        if (!hasSelection(viewer)) setSelecting(false)
+        if (!hasSelection(viewer)) {
+          // A relayout can rebuild the iframe under a live selection without the
+          // selection ever collapsing (no selectionchange to hear): the popover
+          // goes too, and the surface comes back.
+          releaseSurface()
+          setPopover((current) => (current?.mode === 'selection' ? null : current))
+        }
       })
 
       settlingRef.current++
@@ -1139,17 +1160,26 @@ export default function Reader() {
   // The gesture surface over the book is where swipes are actually handled —
   // see registerSwipeNavigation for why it isn't the book's iframe. Taps: a
   // link under the finger wins; otherwise the left third of the page goes
-  // back, the right third forward, and the middle shows/hides the bars. A long
-  // press that lands on a word selects it instead (see `selecting`).
+  // back, the right third forward, and the middle shows/hides the bars. A
+  // long press is the book's: once the finger has rested, the surface lets the
+  // touch through (inline pointer-events: none) so the system's long press
+  // selects the word, and it comes back when the touch ends with nothing
+  // selected, or when the selection is gone. While a popover or a selection is
+  // up, a tap on the surface only dismisses it.
   useEffect(() => {
     const surface = swipeSurfaceRef.current
     const viewer = viewerRef.current
     if (!surface || !viewer) return
     const pageable = () => (canPageRef.current ? renditionRef.current : null)
-    return registerSwipeNavigation(
+    const stopSwipes = registerSwipeNavigation(
       surface,
       pageable,
       (clientX, clientY) => {
+        if (popoverRef.current || hasSelection(viewer)) {
+          clearSelections(viewer)
+          setPopover(null)
+          return
+        }
         if (forwardTapToLink(viewer, clientX, clientY)) return
         const tappedHighlight = renditionRef.current
           ? highlightAtPoint(renditionRef.current, clientX, clientY)
@@ -1164,13 +1194,51 @@ export default function Reader() {
         else if (position > 2 / 3) pageable()?.next()
         else setBarsHidden((hidden) => !hidden)
       },
-      (clientX, clientY) => {
-        const selected = selectWordAt(viewer, clientX, clientY)
-        if (selected) setSelecting(true)
-        return selected
+      () => {
+        surface.style.pointerEvents = 'none'
       }
     )
-  }, [openHighlight])
+    const touchBegan = () => {
+      touchStartedAtRef.current = Date.now()
+    }
+    const touchEnded = () => {
+      touchStartedAtRef.current = 0
+      if (!hasSelection(viewer)) releaseSurface()
+    }
+    surface.addEventListener('touchstart', touchBegan, { passive: true })
+    surface.addEventListener('touchend', touchEnded, { passive: true })
+    surface.addEventListener('touchcancel', touchEnded, { passive: true })
+    return () => {
+      stopSwipes()
+      surface.removeEventListener('touchstart', touchBegan)
+      surface.removeEventListener('touchend', touchEnded)
+      surface.removeEventListener('touchcancel', touchEnded)
+      surface.style.removeProperty('pointer-events')
+    }
+  }, [openHighlight, releaseSurface])
+
+  // A popover over a saved highlight has nothing underneath to collapse (unlike
+  // a selection), so a press anywhere else closes it. Taps on the surface do it
+  // themselves, without also turning the page.
+  useEffect(() => {
+    if (popover?.mode !== 'highlight') return
+    const dismiss = (event: Event) => {
+      const target = event.target as Element | null
+      if (target?.closest?.('[data-selection-popover], [data-swipe-surface]')) return
+      setPopover(null)
+    }
+    document.addEventListener('pointerdown', dismiss, true)
+    return () => document.removeEventListener('pointerdown', dismiss, true)
+  }, [popover?.mode])
+
+  // The popover is placed against where the text was on screen; a resize or a
+  // rotation moves the text out from under one over a highlight (a selection's
+  // goes with its iframe, which the relayout rebuilds).
+  useEffect(() => {
+    const close = () => setPopover((current) => (current?.mode === 'highlight' ? null : current))
+    window.addEventListener('resize', close)
+    return () => window.removeEventListener('resize', close)
+  }, [])
 
   // Handles live updates when the person changes the theme/settings panel
   // while already reading. The initial application (before the first
@@ -1290,58 +1358,60 @@ export default function Reader() {
     '--border': themeTint(activeTheme, 15),
   } as CSSProperties
 
-  function closeSheet() {
-    setSheet((current) => (current ? { ...current, open: false } : current))
+  function closePopover() {
+    setPopover(null)
     if (viewerRef.current) clearSelections(viewerRef.current)
-    setSelecting(false)
   }
 
-  function copySheetText() {
-    if (!sheet) return
+  function copyPopoverText() {
+    if (!popover) return
     // navigator.clipboard only exists in a secure context (HTTPS or localhost),
     // so over plain http on the LAN it's undefined.
     const written =
-      navigator.clipboard?.writeText(sheet.text) ?? Promise.reject(new Error('clipboard unavailable'))
+      navigator.clipboard?.writeText(popover.text) ?? Promise.reject(new Error('clipboard unavailable'))
     written.then(
       () => toast('Copiado'),
       () => toast.error('Não foi possível copiar')
     )
-    closeSheet()
+    closePopover()
   }
 
-  async function highlightSheetText() {
-    if (!sheet || !bookId) return
-    if (highlightsRef.current.some((item) => item.cfiRange === sheet.cfiRange)) {
+  async function highlightPopoverText() {
+    if (!popover || !bookId) return
+    if (highlightsRef.current.some((item) => item.cfiRange === popover.cfiRange)) {
       toast('Esse trecho já está grifado')
-      closeSheet()
+      closePopover()
       return
     }
     const highlight: Highlight = {
       id: uuid(),
       bookId,
-      cfiRange: sheet.cfiRange,
-      text: sheet.text,
+      cfiRange: popover.cfiRange,
+      text: popover.text,
       color: HIGHLIGHT_COLOR,
       createdAt: Date.now(),
     }
+    // Reserved before the write, so a second tap while it's pending hits the
+    // duplicate guard above instead of saving the same range twice.
+    highlightsRef.current = [...highlightsRef.current, highlight]
     try {
       await addHighlight(highlight)
     } catch (error) {
+      highlightsRef.current = highlightsRef.current.filter((item) => item !== highlight)
       console.error('Não foi possível salvar o grifo', error)
       toast.error('Não foi possível salvar o grifo')
       return
     }
-    highlightsRef.current = [...highlightsRef.current, highlight]
     paintHighlight(highlight.cfiRange)
     toast('Grifo salvo')
-    closeSheet()
+    closePopover()
   }
 
-  async function removeSheetHighlight() {
-    if (!sheet) return
-    const highlight = highlightsRef.current.find((item) => item.cfiRange === sheet.cfiRange)
+  async function removePopoverHighlight() {
+    if (!popover) return
+    const highlight = highlightsRef.current.find((item) => item.cfiRange === popover.cfiRange)
     if (!highlight) {
-      closeSheet()
+      closePopover()
       return
     }
     try {
@@ -1354,7 +1424,7 @@ export default function Reader() {
     renditionRef.current?.annotations.remove(highlight.cfiRange, 'highlight')
     highlightsRef.current = highlightsRef.current.filter((item) => item !== highlight)
     toast('Grifo removido')
-    closeSheet()
+    closePopover()
   }
 
   const chapterLabel = chapterLabelFor(toc, activeTocId)
@@ -1534,7 +1604,7 @@ export default function Reader() {
               ref={swipeSurfaceRef}
               data-swipe-surface
               aria-hidden
-              className={cn('absolute inset-0 touch-none select-none', selecting && 'pointer-events-none')}
+              className="absolute inset-0 touch-none select-none"
             />
           )}
         </div>
@@ -1586,18 +1656,15 @@ export default function Reader() {
         </button>
       </nav>
 
-      <SelectionSheet
-        open={sheet?.open ?? false}
-        mode={sheet?.mode ?? 'selection'}
-        side={sheet?.side ?? 'bottom'}
-        text={sheet?.text ?? ''}
-        onOpenChange={(next) => {
-          if (!next) closeSheet()
-        }}
-        onCopy={copySheetText}
-        onHighlight={highlightSheetText}
-        onRemove={removeSheetHighlight}
-      />
+      {popover?.visible && (
+        <SelectionPopover
+          mode={popover.mode}
+          anchor={popover.anchor}
+          onCopy={copyPopoverText}
+          onHighlight={highlightPopoverText}
+          onRemove={removePopoverHighlight}
+        />
+      )}
       {/* The notifications render in place and read the popover colors from
           the nearest scope; the reader's own doesn't define them. */}
       <div
