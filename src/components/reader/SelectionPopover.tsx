@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import { Copy, Highlighter, Trash2 } from 'lucide-react'
+import { Copy, Highlighter, NotebookPen, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { placePopover, type Box } from '@/lib/reader/popover-position'
 import { themeTint } from '@/lib/theme-colors'
@@ -9,10 +9,10 @@ import { useThemeStore } from '@/store/theme-store'
 // 'highlight' is a saved highlight that was tapped.
 export type SelectionPopoverMode = 'selection' | 'highlight'
 
-// Fixed, so the popover can be placed without measuring it first: two 44 px
-// buttons, the gap between them, the padding and the border.
+// Fixed, so the popover can be placed without measuring it first: three 44 px
+// buttons, the two gaps between them, the padding and the border.
 const HEIGHT = 62
-const WIDTH = 114
+const WIDTH = 166
 
 interface SelectionPopoverProps {
   mode: SelectionPopoverMode
@@ -20,10 +20,22 @@ interface SelectionPopoverProps {
   anchor: Box
   onCopy: () => void
   onHighlight: () => void
+  // Highlights the selection and opens the note editor on it.
+  onHighlightWithNote: () => void
+  // Opens the note editor on the tapped highlight.
+  onNote: () => void
   onRemove: () => void
 }
 
-export default function SelectionPopover({ mode, anchor, onCopy, onHighlight, onRemove }: SelectionPopoverProps) {
+export default function SelectionPopover({
+  mode,
+  anchor,
+  onCopy,
+  onHighlight,
+  onHighlightWithNote,
+  onNote,
+  onRemove,
+}: SelectionPopoverProps) {
   const activeTheme = useThemeStore((s) => s.activeTheme)
   const { top, left } = placePopover(
     anchor,
@@ -53,8 +65,10 @@ export default function SelectionPopover({ mode, anchor, onCopy, onHighlight, on
       data-selection-popover
       role="group"
       aria-label="Ações do trecho"
-      // Pressing a button must not take focus, and with it the selection, out of the book.
-      onPointerDown={(event) => event.preventDefault()}
+      // Pressing a button must not take focus, and with it the selection, out of
+      // the book. On mousedown, where focus moves: WebKit drops the click of a
+      // tap whose pointerdown was cancelled.
+      onMouseDown={(event) => event.preventDefault()}
       className="fixed z-40 flex items-center gap-2 rounded-xl border p-2 shadow-lg duration-100 animate-in fade-in-0 zoom-in-95"
       style={style}
     >
@@ -62,20 +76,37 @@ export default function SelectionPopover({ mode, anchor, onCopy, onHighlight, on
         <Copy className="size-5" />
       </Button>
       {mode === 'selection' ? (
-        <Button size="icon" className="size-11" aria-label="Grifar" title="Grifar" onClick={onHighlight}>
-          <Highlighter className="size-5" />
-        </Button>
+        <>
+          <Button size="icon" className="size-11" aria-label="Grifar" title="Grifar" onClick={onHighlight}>
+            <Highlighter className="size-5" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            className="size-11"
+            aria-label="Grifar com nota"
+            title="Grifar com nota"
+            onClick={onHighlightWithNote}
+          >
+            <NotebookPen className="size-5" />
+          </Button>
+        </>
       ) : (
-        <Button
-          variant="outline"
-          size="icon"
-          className="size-11"
-          aria-label="Remover grifo"
-          title="Remover grifo"
-          onClick={onRemove}
-        >
-          <Trash2 className="size-5" />
-        </Button>
+        <>
+          <Button variant="outline" size="icon" className="size-11" aria-label="Nota" title="Nota" onClick={onNote}>
+            <NotebookPen className="size-5" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            className="size-11"
+            aria-label="Remover grifo"
+            title="Remover grifo"
+            onClick={onRemove}
+          >
+            <Trash2 className="size-5" />
+          </Button>
+        </>
       )}
     </div>
   )

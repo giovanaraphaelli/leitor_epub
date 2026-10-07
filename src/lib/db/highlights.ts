@@ -12,3 +12,9 @@ export function addHighlight(highlight: Highlight): Promise<string> {
 export function removeHighlight(id: string): Promise<void> {
   return db.highlights.delete(id)
 }
+
+// An empty note (once trimmed) removes it. An id with no highlight is a no-op.
+export async function setHighlightNote(id: string, note: string): Promise<void> {
+  const trimmed = note.trim()
+  await db.highlights.update(id, { note: trimmed || undefined, updatedAt: Date.now() })
+}

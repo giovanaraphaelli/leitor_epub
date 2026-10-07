@@ -23,6 +23,11 @@ export interface Highlight {
   text: string
   color: string
   createdAt: number
+  // The reader's own note on the passage; absent when there is none. Not
+  // indexed, so adding it needed no new database version.
+  note?: string
+  // When the note was last written.
+  updatedAt?: number
 }
 
 export type ColumnLayout = 'auto' | 'single' | 'double'

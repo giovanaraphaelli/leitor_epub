@@ -6,6 +6,11 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Which bundle a phone is running, for the ?debug=1 trail: the commit on
+  // Vercel, the build time anywhere else.
+  define: {
+    __BUILD_ID__: JSON.stringify(process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) || new Date().toISOString().slice(0, 16)),
+  },
   plugins: [
     react(),
     tailwindcss(),

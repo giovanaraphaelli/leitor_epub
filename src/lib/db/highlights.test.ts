@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db, type Book, type Highlight } from './schema'
 import { addBook, removeBook } from './books'
-import { addHighlight, listHighlights, removeHighlight } from './highlights'
+import { addHighlight, listHighlights, removeHighlight, setHighlightNote } from './highlights'
 
 function makeHighlight(overrides: Partial<Highlight> = {}): Highlight {
   return {
@@ -42,6 +42,29 @@ describe('highlights repository', () => {
     await addHighlight(makeHighlight({ id: 'h2', createdAt: 2 }))
     await removeHighlight('h1')
     expect((await listHighlights('book-a')).map((h) => h.id)).toEqual(['h2'])
+  })
+
+  it('guarda a nota do grifo sem os espaços das pontas, com a hora', async () => {
+    await addHighlight(makeHighlight({ id: 'h1' }))
+    await setHighlightNote('h1', '  boa frase  ')
+    const [row] = await listHighlights('book-a')
+    expect(row.note).toBe('boa frase')
+    expect(typeof row.updatedAt).toBe('number')
+  })
+
+  it('nota vazia apaga a nota e mantém o grifo', async () => {
+    await addHighlight(makeHighlight({ id: 'h1' }))
+    await setHighlightNote('h1', 'boa frase')
+    await setHighlightNote('h1', '   ')
+    const [row] = await listHighlights('book-a')
+    expect(row.id).toBe('h1')
+    expect('note' in row).toBe(false)
+  })
+
+  it('não cria grifo para um id que não existe', async () => {
+    await setHighlightNote('nenhum', 'nota')
+    expect(await db.highlights.get('nenhum')).toBeUndefined()
+    expect(await listHighlights('book-a')).toEqual([])
   })
 
   it('apaga os grifos junto com o livro, sem tocar nos de outro livro', async () => {
