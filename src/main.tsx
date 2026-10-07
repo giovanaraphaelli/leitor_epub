@@ -6,6 +6,10 @@ import './index.css'
 import { router } from '@/routes'
 import { useThemeStore } from '@/store/theme-store'
 import { useReadingPrefsStore } from '@/store/reading-prefs-store'
+import { initDebug } from '@/lib/debug-log'
+
+// Before the awaits below, so a failure while the app starts is in the trail.
+initDebug()
 
 // Awaited before the first render (not fired off in parallel with it): the
 // reader applies the active theme before its first `display()` to avoid a

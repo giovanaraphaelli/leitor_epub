@@ -14,10 +14,38 @@ export function clearSelections(viewer: HTMLElement) {
 }
 
 export function hasSelection(viewer: HTMLElement): boolean {
-  return bookDocuments(viewer).some((doc) => {
+  return liveSelection(viewer) !== null
+}
+
+// The book's live selection: the first rendered section holding one, with its
+// text as it should be copied or saved (soft hyphens of pre-hyphenated books,
+// U+00AD, would end up invisible inside it), or null.
+export function liveSelection(viewer: HTMLElement): { doc: Document; range: Range; text: string } | null {
+  for (const doc of bookDocuments(viewer)) {
     const selection = doc.getSelection()
-    return !!selection && !selection.isCollapsed && selection.toString() !== ''
-  })
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) continue
+    const text = selection.toString().replace(/\u00AD/g, '').trim()
+    if (text) return { doc, range: selection.getRangeAt(0), text }
+  }
+  return null
+}
+
+const nodeIds = new WeakMap<Node, number>()
+let nextNodeId = 1
+
+function nodeId(node: Node): number {
+  let id = nodeIds.get(node)
+  if (id === undefined) {
+    id = nextNodeId++
+    nodeIds.set(node, id)
+  }
+  return id
+}
+
+// Where a selection starts and ends: changes whenever either end moves, even
+// onto the same text somewhere else.
+export function selectionKey(range: Range): string {
+  return `${nodeId(range.startContainer)}:${range.startOffset}-${nodeId(range.endContainer)}:${range.endOffset}`
 }
 
 type RenderedView = {

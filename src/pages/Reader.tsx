@@ -17,16 +17,21 @@ import { v4 as uuid } from 'uuid'
 import { Button } from '@/components/ui/button'
 import { Toaster } from '@/components/ui/sonner'
 import { getBook } from '@/lib/db/books'
-import { addHighlight, listHighlights, removeHighlight } from '@/lib/db/highlights'
+import { addHighlight, listHighlights, removeHighlight, setHighlightNote } from '@/lib/db/highlights'
 import { getProgress, saveProgress } from '@/lib/db/progress'
 import {
   clearSelections,
   hasSelection,
   highlightAtPoint,
   highlightRange,
+  liveSelection,
   rangeViewportRect,
   repaintHighlights,
+  selectionKey,
 } from '@/lib/reader/selection'
+import { IDLE, stepWatch } from '@/lib/reader/selection-watch'
+import { byBookOrder } from '@/lib/reader/annotations'
+import { debugLog, isDebugEnabled } from '@/lib/debug-log'
 import { themeTint } from '@/lib/theme-colors'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/store/theme-store'
@@ -39,6 +44,9 @@ import ReaderSettings from '@/components/reader/ReaderSettings'
 import TableOfContents from '@/components/reader/TableOfContents'
 import BookSearch, { type SearchResult } from '@/components/reader/BookSearch'
 import SelectionPopover, { type SelectionPopoverMode } from '@/components/reader/SelectionPopover'
+import DebugPanel from '@/components/DebugPanel'
+import NoteEditor from '@/components/reader/NoteEditor'
+import type { AnnotationItem } from '@/components/reader/AnnotationList'
 import type { Box } from '@/lib/reader/popover-position'
 import type { ColumnLayout, Highlight, Progress, Theme } from '@/lib/db/schema'
 import readerFontsCss from '@/styles/reader-fonts.css?inline'
@@ -124,6 +132,16 @@ function chapterLabelFor(toc: NavItem[], activeTocId?: string): string | undefin
 function chapterLabelForHref(book: EpubBook, toc: NavItem[], href: string): string | undefined {
   return flattenNavItems(toc).find((item) => resolveTocHref(book, item.href).split('#')[0] === href)
     ?.label.trim()
+}
+
+// The chapter a saved highlight is in, for the annotations list.
+function chapterLabelForCfi(book: EpubBook, toc: NavItem[], cfi: string): string | undefined {
+  try {
+    const href = book.spine.get(cfi)?.href
+    return href ? chapterLabelForHref(book, toc, href) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // A search across the whole book can turn up far more matches than anyone
@@ -421,17 +439,18 @@ interface ReaderKeyActions {
 
 // Arrows, PageUp/PageDown and Space (Shift+Space back) turn pages, "/" opens
 // the search, F toggles full screen. Left alone: anything with Ctrl/Cmd/Alt
-// (browser shortcuts), typing in a field, keys inside a sheet — Slider and
-// ToggleGroup use the arrows themselves, so turning the page at the same
-// time would fight the control being operated — and Space on a button or
-// link, where it means "press this". `closest` rather than `instanceof`
-// checks: keydowns from the book's iframe carry elements of that document's
-// realm, where an instanceof against this window's classes is always false.
+// (browser shortcuts), typing in a field, keys inside a sheet or a dialog —
+// Slider and ToggleGroup use the arrows themselves, so turning the page at
+// the same time would fight the control being operated — and Space on a
+// button or link, where it means "press this". `closest` rather than
+// `instanceof` checks: keydowns from the book's iframe carry elements of
+// that document's realm, where an instanceof against this window's classes
+// is always false.
 function handleReaderKeydown(event: KeyboardEvent, actions: ReaderKeyActions) {
   if (event.ctrlKey || event.metaKey || event.altKey) return
   const target = event.target as Element | null
   const closest = (selector: string) => target?.closest?.(selector)
-  if (closest('[data-slot="sheet-content"], input, textarea, select, [contenteditable="true"]')) return
+  if (closest('[data-slot="sheet-content"], [data-slot="dialog-content"], input, textarea, select, [contenteditable="true"]')) return
 
   switch (event.key) {
     case 'ArrowRight':
@@ -476,6 +495,9 @@ const REST_PASS_MS = 300
 // switch) stops holding the surface off after this long — far past the
 // system's long press, which has landed or won't by then.
 const TOUCH_GUARD_MS = 2000
+// How often the book's selection is read (see selection-watch.ts): the popover
+// shows within two reads of a selection holding still.
+const SELECTION_POLL_MS = 150
 
 const HIGHLIGHT_COLOR = '#fac73c'
 // epub.js draws these as attributes of the highlight's SVG group; its own
@@ -722,6 +744,17 @@ export default function Reader() {
   // the book on every tap and move the page under the reader's eyes.
   const [barsHidden, setBarsHidden] = useState(false)
   const [popover, setPopover] = useState<PopoverState | null>(null)
+  // This book's highlights, for the annotations list; highlightsRef holds the
+  // same list for callbacks bound once, and storeHighlights changes both.
+  const [highlights, setHighlights] = useState<Highlight[]>([])
+  const storeHighlights = useCallback((next: Highlight[]) => {
+    highlightsRef.current = next
+    setHighlights(next)
+  }, [])
+  // The highlight whose note is being written, while the editor is open.
+  const [noteTarget, setNoteTarget] = useState<Highlight | null>(null)
+  // The open book, for what's computed while rendering (refs can't be read then).
+  const [openBook, setOpenBook] = useState<EpubBook | null>(null)
   // Read by the surface's tap callback, which is registered once.
   const popoverRef = useRef<PopoverState | null>(null)
   useEffect(() => {
@@ -735,7 +768,9 @@ export default function Reader() {
   const releaseSurface = useCallback(() => {
     const startedAt = touchStartedAtRef.current
     if (startedAt && Date.now() - startedAt < TOUCH_GUARD_MS) return
-    swipeSurfaceRef.current?.style.removeProperty('pointer-events')
+    const surface = swipeSurfaceRef.current
+    if (surface?.style.pointerEvents === 'none') debugLog('camada volta sobre o livro')
+    surface?.style.removeProperty('pointer-events')
   }, [])
 
   const openHighlight = useCallback((cfiRange: string) => {
@@ -812,6 +847,7 @@ export default function Reader() {
       bookBufferRef.current = arrayBuffer
       const book = ePub(arrayBuffer)
       bookRef.current = book
+      setOpenBook(book)
 
       // book.locations.generate() walks the spine loading and unloading each
       // Section to measure it — but Section load/unload isn't safe to run
@@ -850,23 +886,6 @@ export default function Reader() {
       rendition.on('resized', () => {
         if (canPageRef.current) resettle()
       })
-      // Emitted by epub.js (debounced, 250 ms after the last change) for any
-      // non-collapsed selection, with the CFI already computed: a mouse drag on
-      // desktop, the system's own long press plus its handles on a phone. It's
-      // what brings the popover up, and back after the handles are dragged.
-      rendition.on('selected', (cfiRange: string, contents: Contents) => {
-        const selection = contents.window.getSelection()
-        // Soft hyphens (U+00AD) of pre-hyphenated books come along in the
-        // selected text; they'd end up invisible inside what's copied or saved.
-        const text = selection?.toString().replace(/\u00AD/g, '').trim()
-        if (!selection || !text) return
-        const anchor = rangeViewportRect(selection.getRangeAt(0))
-        if (!anchor) return
-        // A toast could sit over the popover's buttons and swallow the tap.
-        toast.dismiss()
-        setPopover({ mode: 'selection', text, cfiRange, anchor, visible: true })
-      })
-
       // The book's content renders in its own iframe document, which doesn't
       // inherit stylesheets from the main page — the palette fonts need to be
       // injected directly into each rendered section. Inline rather than a
@@ -907,22 +926,10 @@ export default function Reader() {
         registerSwipeNavigation(contents.document.documentElement, () =>
           canPageRef.current ? rendition : null
         )
-        // A collapsed selection (a tap on text, a click elsewhere on desktop, or
-        // the reader clearing it) closes the popover that was showing it and puts
-        // the surface back over the book. A selection that's still there but
-        // changing (a handle being dragged) only hides the popover until it settles.
-        contents.document.addEventListener('selectionchange', () => {
-          const selection = contents.document.getSelection()
-          if (!selection || selection.isCollapsed) {
-            releaseSurface()
-            setPopover((current) => (current?.mode === 'selection' ? null : current))
-          } else {
-            setPopover((current) =>
-              current?.mode === 'selection' && current.visible ? { ...current, visible: false } : current
-            )
-          }
-        })
-        // Any press inside the book is outside the popover.
+        // Any press inside the book is outside the popover. (Not in WebKit,
+        // which runs no listener in the book's sandboxed iframe: on a phone the
+        // tap reaches the surface, which closes the popover itself; on a Mac
+        // nothing does, and a highlight's own click doesn't open it either.)
         contents.document.addEventListener('pointerdown', () => {
           setPopover((current) => (current?.mode === 'highlight' ? null : current))
         })
@@ -933,7 +940,7 @@ export default function Reader() {
 
       const savedHighlights = await listHighlights(bookId!)
       if (cancelled) return
-      highlightsRef.current = savedHighlights
+      storeHighlights(savedHighlights)
       for (const highlight of savedHighlights) {
         // One position epub.js can't resolve must not keep the book from opening.
         try {
@@ -1028,8 +1035,8 @@ export default function Reader() {
         }
         if (!hasSelection(viewer)) {
           // A relayout can rebuild the iframe under a live selection without the
-          // selection ever collapsing (no selectionchange to hear): the popover
-          // goes too, and the surface comes back.
+          // selection ever collapsing: the popover goes too, and the surface comes
+          // back, right away rather than at the selection poller's next read.
           releaseSurface()
           setPopover((current) => (current?.mode === 'selection' ? null : current))
         }
@@ -1195,15 +1202,18 @@ export default function Reader() {
         else setBarsHidden((hidden) => !hidden)
       },
       () => {
+        debugLog('dedo parado: o toque passa ao livro')
         surface.style.pointerEvents = 'none'
       }
     )
     const touchBegan = () => {
       touchStartedAtRef.current = Date.now()
     }
-    const touchEnded = () => {
+    const touchEnded = (event: Event) => {
       touchStartedAtRef.current = 0
-      if (!hasSelection(viewer)) releaseSurface()
+      const selected = hasSelection(viewer)
+      debugLog(event.type === 'touchcancel' ? 'toque cancelado' : 'toque terminou', selected ? 'com seleção' : 'sem seleção')
+      if (!selected) releaseSurface()
     }
     surface.addEventListener('touchstart', touchBegan, { passive: true })
     surface.addEventListener('touchend', touchEnded, { passive: true })
@@ -1216,6 +1226,64 @@ export default function Reader() {
       surface.style.removeProperty('pointer-events')
     }
   }, [openHighlight, releaseSurface])
+
+  // The book's selection, read from out here (selection-watch.ts says why not
+  // from a listener inside the book): the popover shows once the selection
+  // holds still, hides while it moves, and goes when it does, taking the
+  // surface back over the book with it.
+  useEffect(() => {
+    let state = IDLE
+    const read = () => {
+      const viewer = viewerRef.current
+      const rendition = renditionRef.current
+      if (document.hidden || !viewer || !rendition) return
+      const live = liveSelection(viewer)
+      // Level-triggered, whatever the touch events did (iOS can cancel a touch
+      // before its long press selects, and a touch's end can be lost): the
+      // surface is out of the way while there's a selection and back once there
+      // isn't. releaseSurface still waits for a touch that's down.
+      const surface = swipeSurfaceRef.current
+      if (live && surface && surface.style.pointerEvents !== 'none') {
+        debugLog('seleção viva: camada sai do caminho')
+        surface.style.pointerEvents = 'none'
+      } else if (!live) {
+        releaseSurface()
+      }
+      const step = stepWatch(state, live ? selectionKey(live.range) : null)
+      state = step.state
+      if (!step.action) return
+      debugLog('seleção: ' + step.action, live ? `${live.text.length} letras` : undefined)
+      if (step.action === 'close') {
+        releaseSurface()
+        setPopover((current) => (current?.mode === 'selection' ? null : current))
+        return
+      }
+      if (step.action === 'hide') {
+        setPopover((current) =>
+          current?.mode === 'selection' && current.visible ? { ...current, visible: false } : current
+        )
+        return
+      }
+      if (!live) return
+      const contents = (rendition.getContents() as unknown as Contents[]).find((item) => item.document === live.doc)
+      const anchor = rangeViewportRect(live.range)
+      let cfiRange: string | undefined
+      try {
+        cfiRange = contents?.cfiFromRange(live.range)
+      } catch (error) {
+        debugLog('posição da seleção falhou', error)
+      }
+      if (!cfiRange || !anchor) {
+        debugLog('cartão não abriu', !cfiRange ? 'sem posição' : 'trecho fora da tela')
+        return
+      }
+      // A toast could sit over the popover's buttons and swallow the tap.
+      toast.dismiss()
+      setPopover({ mode: 'selection', text: live.text, cfiRange, anchor, visible: true })
+    }
+    const timer = window.setInterval(read, SELECTION_POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [releaseSurface])
 
   // A popover over a saved highlight has nothing underneath to collapse (unlike
   // a selection), so a press anywhere else closes it. Taps on the surface do it
@@ -1371,17 +1439,23 @@ export default function Reader() {
       navigator.clipboard?.writeText(popover.text) ?? Promise.reject(new Error('clipboard unavailable'))
     written.then(
       () => toast('Copiado'),
-      () => toast.error('Não foi possível copiar')
+      (error) => {
+        debugLog('cópia falhou', error)
+        toast.error('Não foi possível copiar')
+      }
     )
     closePopover()
   }
 
-  async function highlightPopoverText() {
-    if (!popover || !bookId) return
-    if (highlightsRef.current.some((item) => item.cfiRange === popover.cfiRange)) {
+  // The highlight saved (or the one already on that passage), for the note
+  // editor to open on.
+  async function highlightPopoverText(): Promise<Highlight | undefined> {
+    if (!popover || !bookId) return undefined
+    const existing = highlightsRef.current.find((item) => item.cfiRange === popover.cfiRange)
+    if (existing) {
       toast('Esse trecho já está grifado')
       closePopover()
-      return
+      return existing
     }
     const highlight: Highlight = {
       id: uuid(),
@@ -1393,18 +1467,56 @@ export default function Reader() {
     }
     // Reserved before the write, so a second tap while it's pending hits the
     // duplicate guard above instead of saving the same range twice.
-    highlightsRef.current = [...highlightsRef.current, highlight]
+    storeHighlights([...highlightsRef.current, highlight])
     try {
       await addHighlight(highlight)
     } catch (error) {
-      highlightsRef.current = highlightsRef.current.filter((item) => item !== highlight)
+      storeHighlights(highlightsRef.current.filter((item) => item !== highlight))
+      debugLog('grifo não salvo', error)
       console.error('Não foi possível salvar o grifo', error)
       toast.error('Não foi possível salvar o grifo')
-      return
+      return undefined
     }
     paintHighlight(highlight.cfiRange)
     toast('Grifo salvo')
     closePopover()
+    return highlight
+  }
+
+  async function highlightPopoverTextWithNote() {
+    const highlight = await highlightPopoverText()
+    if (highlight) setNoteTarget(highlight)
+  }
+
+  function openPopoverNote() {
+    if (!popover) return
+    const highlight = highlightsRef.current.find((item) => item.cfiRange === popover.cfiRange)
+    closePopover()
+    if (highlight) setNoteTarget(highlight)
+  }
+
+  function editNote(id: string) {
+    const highlight = highlightsRef.current.find((item) => item.id === id)
+    if (highlight) setNoteTarget(highlight)
+  }
+
+  async function saveNote(target: Highlight, note: string) {
+    const trimmed = note.trim()
+    try {
+      await setHighlightNote(target.id, trimmed)
+    } catch (error) {
+      debugLog('nota não salva', error)
+      console.error('Não foi possível salvar a nota', error)
+      toast.error('Não foi possível salvar a nota')
+      return
+    }
+    storeHighlights(
+      highlightsRef.current.map((item) =>
+        item.id === target.id ? { ...item, note: trimmed || undefined, updatedAt: Date.now() } : item
+      )
+    )
+    setNoteTarget(null)
+    if (trimmed || target.note) toast(trimmed ? 'Nota salva' : 'Nota apagada')
   }
 
   async function removePopoverHighlight() {
@@ -1422,12 +1534,22 @@ export default function Reader() {
       return
     }
     renditionRef.current?.annotations.remove(highlight.cfiRange, 'highlight')
-    highlightsRef.current = highlightsRef.current.filter((item) => item !== highlight)
+    storeHighlights(highlightsRef.current.filter((item) => item !== highlight))
     toast('Grifo removido')
     closePopover()
   }
 
   const chapterLabel = chapterLabelFor(toc, activeTocId)
+  const annotations = useMemo<AnnotationItem[]>(() => {
+    return byBookOrder(highlights).map((item) => ({
+      id: item.id,
+      cfiRange: item.cfiRange,
+      text: item.text,
+      note: item.note,
+      color: item.color,
+      chapter: openBook ? chapterLabelForCfi(openBook, toc, item.cfiRange) : undefined,
+    }))
+  }, [highlights, openBook, toc])
   const bookWidth =
     bookRowWidth === undefined
       ? undefined
@@ -1482,7 +1604,7 @@ export default function Reader() {
             aria-label="Sumário"
             title="Sumário"
             className={cn('hidden sm:inline-flex', LABELLED_BUTTON)}
-            disabled={toc.length === 0}
+            disabled={toc.length === 0 && highlights.length === 0}
             onClick={() => setTocOpen(true)}
           >
             <List />
@@ -1541,6 +1663,9 @@ export default function Reader() {
           const book = bookRef.current
           if (book) navigateTo(resolveTocHref(book, href))
         }}
+        annotations={annotations}
+        onOpenAnnotation={navigateTo}
+        onEditNote={editNote}
       />
       <BookSearch
         open={searchOpen}
@@ -1633,7 +1758,7 @@ export default function Reader() {
         <button
           type="button"
           onClick={() => setTocOpen(true)}
-          disabled={toc.length === 0}
+          disabled={toc.length === 0 && highlights.length === 0}
           className={bottomBarButtonClass}
         >
           <List className="size-5" />
@@ -1661,8 +1786,19 @@ export default function Reader() {
           mode={popover.mode}
           anchor={popover.anchor}
           onCopy={copyPopoverText}
-          onHighlight={highlightPopoverText}
+          onHighlight={() => void highlightPopoverText()}
+          onHighlightWithNote={() => void highlightPopoverTextWithNote()}
+          onNote={openPopoverNote}
           onRemove={removePopoverHighlight}
+        />
+      )}
+      {noteTarget && (
+        <NoteEditor
+          key={noteTarget.id}
+          excerpt={noteTarget.text}
+          note={noteTarget.note ?? ''}
+          onSave={(note) => void saveNote(noteTarget, note)}
+          onClose={() => setNoteTarget(null)}
         />
       )}
       {/* The notifications render in place and read the popover colors from
@@ -1678,6 +1814,7 @@ export default function Reader() {
       >
         <Toaster />
       </div>
+      {isDebugEnabled() && <DebugPanel />}
     </div>
   )
 }
