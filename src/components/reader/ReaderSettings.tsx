@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { Settings2, Columns2, Square, LayoutGrid, Check, Plus } from "lucide-react";
+import { Settings2, Columns2, Square, LayoutGrid, Check, Plus, Keyboard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import {
   Sheet,
+  SheetClose,
   SheetContent,
   SheetHeader,
   SheetTitle,
@@ -33,7 +34,11 @@ import { cn } from "@/lib/utils";
 // render in the main document.
 import "@/styles/reader-fonts.css";
 
-export default function ReaderSettings() {
+export default function ReaderSettings({
+  onShowShortcuts,
+}: {
+  onShowShortcuts?: () => void;
+}) {
   const activeTheme = useThemeStore((s) => s.activeTheme);
   const updateActiveTheme = useThemeStore((s) => s.updateActiveTheme);
   const keepScreenOn = useReadingPrefsStore((s) => s.keepScreenOn);
@@ -44,6 +49,7 @@ export default function ReaderSettings() {
   // adjusted. The overlay still catches the click/tap that closes the panel,
   // so it never reaches the page (where it would turn it).
   const isDesktop = useMediaQuery(DESKTOP_QUERY);
+  const hasMouse = useMediaQuery("(pointer: fine)");
 
   // Sheet content renders through a portal to document.body, outside the
   // reader's theme-scoped subtree — same reasoning as Reader.tsx's themeVars.
@@ -300,6 +306,19 @@ export default function ReaderSettings() {
                 onCheckedChange={setKeepScreenOn}
               />
             </div>
+          )}
+
+          {hasMouse && onShowShortcuts && (
+            <SheetClose asChild>
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={onShowShortcuts}
+              >
+                <Keyboard />
+                Atalhos do teclado
+              </Button>
+            </SheetClose>
           )}
         </div>
       </SheetContent>

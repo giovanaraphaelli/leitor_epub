@@ -20,6 +20,10 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,webmanifest}'],
         navigateFallback: '/index.html',
+        // The login goes through /api/auth/* as page navigations; answering
+        // them with the cached app would keep them from reaching the server.
+        // /privacy is a static page of its own, not a route of the app.
+        navigateFallbackDenylist: [/^\/api\//, /^\/privacy/],
       },
     }),
   ],

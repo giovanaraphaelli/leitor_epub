@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "start": "node --env-file-if-exists=.env.local server/main.ts",
     "test": "vitest run",
     "epub:generate": "node scripts/generate-test-epub.mjs",
     "epub:validate": "node scripts/validate-epub.mjs"
@@ -35,6 +36,7 @@
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1",
     "shadcn": "^4.14.1",
+    "sirv": "^3.0.2",
     "sonner": "^2.0.8",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",

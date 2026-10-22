@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Leitor EPUB",
-  "short_name": "Leitor EPUB",
-  "description": "Leitor de EPUB com seus livros e progresso guardados só no seu aparelho.",
+  "name": "E-books",
+  "short_name": "E-books",
+  "description": "Leitor de EPUB pessoal, com seus livros, progresso e grifos no seu navegador e Google Drive opcional.",
   "lang": "pt-BR",
   "start_url": "/",
   "scope": "/",

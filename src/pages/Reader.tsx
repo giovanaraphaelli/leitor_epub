@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import ePub, {
   EpubCFI,
   type Book as EpubBook,
@@ -16,7 +16,9 @@ import { toast } from 'sonner'
 import { v4 as uuid } from 'uuid'
 import { Button } from '@/components/ui/button'
 import { Toaster } from '@/components/ui/sonner'
-import { getBook } from '@/lib/db/books'
+import { getBook, updateBook } from '@/lib/db/books'
+import { ensureBookFile, needsDownload } from '@/lib/sync/book-file'
+import { LOCATION_CHARS } from '@/lib/epub/prepare'
 import { addHighlight, listHighlights, removeHighlight, setHighlightNote } from '@/lib/db/highlights'
 import { getProgress, saveProgress } from '@/lib/db/progress'
 import {
@@ -32,7 +34,17 @@ import {
 import { IDLE, stepWatch } from '@/lib/reader/selection-watch'
 import { byBookOrder } from '@/lib/reader/annotations'
 import { debugLog, isDebugEnabled } from '@/lib/debug-log'
-import { themeTint } from '@/lib/theme-colors'
+import { applyLinkStyles, isExternalHref, linkStylesheet } from '@/lib/reader/links'
+import {
+  IDLE_CHECKPOINT,
+  savedOrigin,
+  stepCheckpoint,
+  type CheckpointEvent,
+  type CheckpointState,
+  type Origin,
+} from '@/lib/reader/checkpoint'
+import { createWheelPager } from '@/lib/reader/wheel-paging'
+import { linkColor, themeTint } from '@/lib/theme-colors'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/store/theme-store'
 import { useReadingPrefsStore } from '@/store/reading-prefs-store'
@@ -41,6 +53,8 @@ import { DESKTOP_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { useElementWidth } from '@/hooks/use-element-width'
 import ProgressBar from '@/components/ProgressBar'
 import ReaderSettings from '@/components/reader/ReaderSettings'
+import ReturnButton from '@/components/reader/ReturnButton'
+import ShortcutsDialog from '@/components/reader/ShortcutsDialog'
 import TableOfContents from '@/components/reader/TableOfContents'
 import BookSearch, { type SearchResult } from '@/components/reader/BookSearch'
 import SelectionPopover, { type SelectionPopoverMode } from '@/components/reader/SelectionPopover'
@@ -201,7 +215,7 @@ function computeActiveTocId(
 // a reflow after display can shift which CFI is "currently displayed",
 // which then gets saved over the position the person actually left off at)
 // and again whenever the theme changes while already reading.
-function applyTheme(rendition: Rendition, theme: Theme) {
+function applyTheme(rendition: Rendition, theme: Theme, fontScale: number) {
   rendition.themes.default({
     body: {
       background: `${theme.background} !important`,
@@ -216,7 +230,7 @@ function applyTheme(rendition: Rendition, theme: Theme) {
       'line-height': `${theme.lineHeight} !important`,
     },
   })
-  rendition.themes.fontSize(`${theme.fontSize}px`)
+  rendition.themes.fontSize(`${theme.fontSize * fontScale}px`)
 
   const { spread, minWidth } = SPREAD_BY_COLUMNS[theme.columns]
   rendition.spread(spread, minWidth)
@@ -355,6 +369,29 @@ function currentLocationOf(rendition: Rendition): Location | undefined {
   }
 }
 
+function chapterStartTarget(rendition: Rendition, book: EpubBook): string | undefined {
+  const index = currentLocationOf(rendition)?.start?.index
+  return index === undefined ? undefined : book.spine.get(index)?.href
+}
+
+// The last text of the chapter on screen, as a CFI: its page is the chapter's last.
+function chapterEndTarget(rendition: Rendition): string | undefined {
+  const index = currentLocationOf(rendition)?.start?.index
+  const contents = (rendition.getContents() as unknown as Contents[]).find((item) => item.sectionIndex === index)
+  const doc = contents?.document
+  if (!contents || !doc?.body) return undefined
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => (node.textContent?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP),
+  })
+  let last: Node | null = null
+  while (walker.nextNode()) last = walker.currentNode
+  if (!last) return undefined
+  const range = doc.createRange()
+  range.setStart(last, last.textContent?.length ?? 0)
+  range.collapse(true)
+  return contents.cfiFromRange(range)
+}
+
 // epub.js picks the page for a display() target as soon as the section's
 // iframe exists, but the theme and the palette fonts only reach that iframe
 // afterwards (content hooks, then async font loads). Each reflows the text
@@ -431,14 +468,29 @@ function toggleFullscreen() {
   change.catch(() => {})
 }
 
+// A <pre> or a table that scrolls on its own keeps the wheel.
+function scrollsOnItsOwn(target: EventTarget | null, horizontal: boolean): boolean {
+  for (let el = target as Element | null; el && el.tagName !== 'BODY' && el.tagName !== 'HTML'; el = el.parentElement) {
+    const style = el.ownerDocument.defaultView?.getComputedStyle(el)
+    const overflow = horizontal ? style?.overflowX : style?.overflowY
+    const overflows = horizontal ? el.scrollWidth > el.clientWidth : el.scrollHeight > el.clientHeight
+    if (overflows && (overflow === 'auto' || overflow === 'scroll')) return true
+  }
+  return false
+}
+
 interface ReaderKeyActions {
   next: () => void
   prev: () => void
   openSearch: () => void
+  chapterStart: () => void
+  chapterEnd: () => void
+  openShortcuts: () => void
 }
 
-// Arrows, PageUp/PageDown and Space (Shift+Space back) turn pages, "/" opens
-// the search, F toggles full screen. Left alone: anything with Ctrl/Cmd/Alt
+// Arrows, PageUp/PageDown and Space (Shift+Space back) turn pages, Home and End
+// go to the start and end of the chapter, "/" opens the search, "?" the list of
+// shortcuts, F toggles full screen. Left alone: anything with Ctrl/Cmd/Alt
 // (browser shortcuts), typing in a field, keys inside a sheet or a dialog —
 // Slider and ToggleGroup use the arrows themselves, so turning the page at
 // the same time would fight the control being operated — and Space on a
@@ -454,12 +506,23 @@ function handleReaderKeydown(event: KeyboardEvent, actions: ReaderKeyActions) {
 
   switch (event.key) {
     case 'ArrowRight':
+    case 'ArrowDown':
     case 'PageDown':
       actions.next()
       break
     case 'ArrowLeft':
+    case 'ArrowUp':
     case 'PageUp':
       actions.prev()
+      break
+    case 'Home':
+      actions.chapterStart()
+      break
+    case 'End':
+      actions.chapterEnd()
+      break
+    case '?':
+      actions.openShortcuts()
       break
     case ' ':
       if (closest('button, a[href]')) return
@@ -655,12 +718,17 @@ function registerSwipeNavigation(
 }
 
 // A tap can't reach a link inside the book while the gesture surface is over
-// it — the surface is what receives the touch. epub.js assigns its own onclick
-// to every internal link when it renders a section (replaceLinks in its
-// source), so re-dispatching the click on whatever sits under the finger is
-// enough to keep footnote and cross-reference links working. Returns whether
-// there was a link, so the tap isn't also taken as a page turn.
-function forwardTapToLink(viewer: HTMLElement, clientX: number, clientY: number): boolean {
+// it — the surface is what receives the touch. The link under the finger is
+// handed to the app (followLink in Reader) rather than clicked inside the
+// book, which also works in WebKit, whose sandboxed book iframe runs no
+// scripts. Returns whether there was a link, so the tap isn't also taken as a
+// page turn.
+function forwardTapToLink(
+  viewer: HTMLElement,
+  clientX: number,
+  clientY: number,
+  follow: (link: HTMLAnchorElement, doc: Document) => void
+): boolean {
   for (const iframe of viewer.querySelectorAll<HTMLIFrameElement>('iframe')) {
     const doc = iframe.contentDocument
     if (!doc) continue
@@ -675,7 +743,7 @@ function forwardTapToLink(viewer: HTMLElement, clientX: number, clientY: number)
       .elementFromPoint(clientX - left, clientY - top)
       ?.closest<HTMLAnchorElement>('a[href]')
     if (link) {
-      link.click()
+      follow(link, doc)
       return true
     }
   }
@@ -729,7 +797,27 @@ export default function Reader() {
   const resettleRef = useRef<() => void>(() => {})
   // Set by open(), which owns the locations Book the percentage comes from.
   const persistCurrentLocationRef = useRef<() => void>(() => {})
+  // The return point (checkpoint.ts). The ref is what the callbacks registered
+  // once read; the state is what renders.
+  const checkpointRef = useRef<CheckpointState>(IDLE_CHECKPOINT)
+  const [checkpoint, setCheckpoint] = useState<CheckpointState>(IDLE_CHECKPOINT)
+  // Set by open(): persist() and percentageForCfi() live in its closure.
+  const persistRef = useRef<(cfi: string, percentage: number) => void>(() => {})
+  const percentageForCfiRef = useRef<(cfi: string) => number | undefined>(() => undefined)
+  // The next history change is one the reader made itself (dropping the guard
+  // entry), not the system Back.
+  const appHistoryChangeRef = useRef(false)
+  const dispatchCheckpointRef = useRef<(event: CheckpointEvent) => void>(() => {})
+  const navigateToRef = useRef<(target: string, options?: { checkpoint?: boolean }) => void>(() => {})
+  const followLinkRef = useRef<(link: HTMLAnchorElement, doc: Document) => void>(() => {})
+  const location = useLocation()
   const [loading, setLoading] = useState(true)
+  // A link to a book that isn't here (removed, or opened under an id from
+  // before the ids came from the content) goes back to the library instead of
+  // leaving the reader on a spinner.
+  const [missing, setMissing] = useState(false)
+  // A book that's only on Drive is downloaded on this loading screen.
+  const [fileState, setFileState] = useState<'pronto' | 'baixando' | 'falhou'>('pronto')
   const [toc, setToc] = useState<NavItem[]>([])
   const [activeTocId, setActiveTocId] = useState<string>()
   const [percentage, setPercentage] = useState<number>()
@@ -738,6 +826,7 @@ export default function Reader() {
   // the bottom bar on phones.
   const [tocOpen, setTocOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
   // Phones only (see the max-sm: classes on the bars): a tap on the middle of
   // the page hides the bars. They keep their space while hidden, like in
   // other e-book readers — letting the text grow into it would re-paginate
@@ -819,7 +908,52 @@ export default function Reader() {
         if (canPageRef.current) renditionRef.current?.prev()
       },
       openSearch: () => setSearchOpen(true),
+      chapterStart: () => {
+        const rendition = renditionRef.current
+        const book = bookRef.current
+        const target = canPageRef.current && rendition && book ? chapterStartTarget(rendition, book) : undefined
+        if (target) navigateToRef.current(target, { checkpoint: true })
+      },
+      chapterEnd: () => {
+        const rendition = renditionRef.current
+        const target = canPageRef.current && rendition ? chapterEndTarget(rendition) : undefined
+        if (target) navigateToRef.current(target, { checkpoint: true })
+      },
+      openShortcuts: () => setShortcutsOpen(true),
     }),
+    []
+  )
+
+  // One detector for the whole reader, not one per section: a chapter change
+  // creates a new iframe mid-gesture, and a fresh detector would read the
+  // rest of the flick as a new gesture. A turn asked for while one is still
+  // landing is dropped — epub.js queues next()/prev(), which would stack pages.
+  const wheelPagerRef = useRef(createWheelPager())
+  const wheelTurningRef = useRef(false)
+  const onWheel = useMemo(
+    () => (event: WheelEvent) => {
+      const pager = wheelPagerRef.current
+      if (event.ctrlKey) {
+        pager.reset()
+        return
+      }
+      if (event.metaKey || event.altKey || !canPageRef.current) return
+      if (scrollsOnItsOwn(event.target, Math.abs(event.deltaX) > Math.abs(event.deltaY))) {
+        pager.reset()
+        return
+      }
+      // Also what keeps a sideways two-finger swipe from being Chrome's Back on a Mac.
+      if (event.cancelable) event.preventDefault()
+      const direction = pager.feed(event)
+      const rendition = renditionRef.current
+      if (!direction || !rendition || wheelTurningRef.current) return
+      wheelTurningRef.current = true
+      const landed = nextRelocation(rendition)
+      void (direction === 'next' ? rendition.next() : rendition.prev())
+      void landed.then(() => {
+        wheelTurningRef.current = false
+      })
+    },
     []
   )
   const activeTheme = useThemeStore((s) => s.activeTheme)
@@ -827,6 +961,8 @@ export default function Reader() {
   // live-update effect below can tell "loading just flipped to false" apart
   // from "the theme actually changed" — see that effect's comment.
   const appliedThemeRef = useRef<{ rendition: Rendition; theme: Theme } | null>(null)
+  // The open book's own correction (Book.fontScale); 1 until open() reads it.
+  const fontScaleRef = useRef(1)
 
   useEffect(() => {
     if (!bookId || !viewerRef.current) return
@@ -835,10 +971,27 @@ export default function Reader() {
 
     async function open() {
       const record = await getBook(bookId!)
-      if (!record || cancelled) return
+      if (cancelled) return
+      if (!record) {
+        setMissing(true)
+        return
+      }
       setBookTitle(record.title)
+      fontScaleRef.current = record.fontScale ?? 1
 
-      const arrayBuffer = await record.fileBlob.arrayBuffer()
+      let file: Blob
+      try {
+        if (needsDownload(record)) setFileState('baixando')
+        file = await ensureBookFile(record)
+      } catch (error) {
+        debugLog('leitor: livro sem arquivo', String(error))
+        if (!cancelled) setFileState('falhou')
+        return
+      }
+      if (cancelled) return
+      setFileState('pronto')
+
+      const arrayBuffer = await file.arrayBuffer()
       // From here to renditionRef being set is synchronous. Without this
       // check, closing the reader during the await left a rendition the
       // cleanup never saw — still able to save a position computed against a
@@ -849,22 +1002,33 @@ export default function Reader() {
       bookRef.current = book
       setOpenBook(book)
 
-      // book.locations.generate() walks the spine loading and unloading each
-      // Section to measure it — but Section load/unload isn't safe to run
-      // concurrently with the rendition reading from those same Section
-      // objects to display the current page. Running both against the same
-      // Book crashed inside epub.js (Locations' queue callback reading
-      // `._locations` on a Section state torn down mid-load). A second,
-      // independent Book parsed from the same bytes has its own Sections, so
-      // the two can run at the same time safely — this is also what avoids
-      // blocking the first page on a multi-second scan of the whole book.
-      const locationsBook = ePub(arrayBuffer.slice(0))
-      let locationsGenerated = false
-      const locationsReady = (async () => {
-        await locationsBook.ready
-        await locationsBook.locations.generate(1024)
-        locationsGenerated = true
-      })()
+      // Saved on import (prepareEpub): loading them is instant and touches no
+      // Section, so the rendering Book can hold them. Books imported before
+      // that generate them here once and keep them for next time.
+      let locations: EpubBook['locations'] | undefined
+      const savedLocations = record.locations
+      const locationsReady = savedLocations
+        ? book.ready.then(() => {
+            book.locations.load(savedLocations)
+            locations = book.locations
+          })
+        : (async () => {
+            // book.locations.generate() walks the spine loading and unloading
+            // each Section to measure it — but Section load/unload isn't safe
+            // to run concurrently with the rendition reading from those same
+            // Section objects to display the current page. Running both
+            // against the same Book crashed inside epub.js (Locations' queue
+            // callback reading `._locations` on a Section state torn down
+            // mid-load). A second, independent Book parsed from the same bytes
+            // has its own Sections, so the two can run at the same time safely
+            // — this is also what avoids blocking the first page on a
+            // multi-second scan of the whole book.
+            const locationsBook = ePub(arrayBuffer.slice(0))
+            await locationsBook.ready
+            await locationsBook.locations.generate(LOCATION_CHARS)
+            locations = locationsBook.locations
+            await updateBook(bookId!, { locations: locationsBook.locations.save() })
+          })()
 
       const rendition = book.renderTo(viewerRef.current!, {
         width: '100%',
@@ -893,6 +1057,16 @@ export default function Reader() {
       // iframe, so there'd be no way to know when its @font-face rules apply.
       rendition.hooks.content.register((contents: Contents) => {
         contents.addStylesheetCss(readerFontsCss, 'reader-fonts')
+        applyLinkStyles(contents.document, linkStylesheet(useThemeStore.getState().activeTheme))
+        // After epub.js's Contents set its own onclick on each link, so this
+        // one replaces it (an onclick property, not a listener: only one runs).
+        for (const link of contents.document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+          link.onclick = (event) => {
+            event.preventDefault()
+            followLinkRef.current(link, contents.document)
+            return false
+          }
+        }
         // Those fonts load asynchronously (slowly on iOS), and one landing
         // after the section is laid out reflows it into more or fewer pages —
         // which epub.js never notices: its font listener is commented out in
@@ -920,6 +1094,7 @@ export default function Reader() {
         contents.document.addEventListener('keydown', (e: KeyboardEvent) =>
           handleReaderKeydown(e, keyActions)
         )
+        contents.document.addEventListener('wheel', onWheel, { passive: false })
         // Same reasoning for touch. No cleanup needed: epub.js tears down the
         // whole iframe document when it unrenders a section, taking its
         // listeners with it.
@@ -935,7 +1110,7 @@ export default function Reader() {
         })
       })
 
-      applyTheme(rendition, activeTheme)
+      applyTheme(rendition, activeTheme, fontScaleRef.current)
       appliedThemeRef.current = { rendition, theme: activeTheme }
 
       const savedHighlights = await listHighlights(bookId!)
@@ -968,25 +1143,32 @@ export default function Reader() {
         resolveFirstRelocation = resolve
       })
 
-      // Not length() > 1: locations fill in during generate(), but `total` is
-      // only set at the end, so every percentage is 0 until then. Callers get
-      // undefined and keep the last known value.
+      // `locations` is set only once ready — not length() > 1: locations fill
+      // in during generate(), but `total` is only set at the end, so every
+      // percentage is 0 until then. Callers get undefined and keep the last
+      // known value.
       const percentageForCfi = (cfi: string): number | undefined =>
-        locationsGenerated
-          ? Math.round(locationsBook.locations.percentageFromCfi(cfi) * 100)
-          : undefined
+        locations ? Math.round(locations.percentageFromCfi(cfi) * 100) : undefined
 
       // Retried once, only while still the newest write — a late retry would
       // put an older position back on top of a newer one.
       let saveSeq = 0
+      // positionRef stays what's on screen (the re-seek anchor: rotating
+      // inside a note keeps the note); what's written is the origin while a
+      // return point exists, so closing the app in a note reopens where the
+      // reader was reading, here and on every synced device.
       const persist = (cfi: string, percentage: number) => {
         const record: Progress = { bookId: bookId!, cfi, percentage, lastReadAt: Date.now() }
         positionRef.current = record
+        const origin = savedOrigin(checkpointRef.current)
+        const saved = origin ? { ...record, cfi: origin.cfi, percentage: origin.percentage ?? percentage } : record
         const seq = ++saveSeq
-        saveProgress(record)
-          .catch(() => (seq === saveSeq ? saveProgress(record) : undefined))
+        saveProgress(saved)
+          .catch(() => (seq === saveSeq ? saveProgress(saved) : undefined))
           .catch((error) => console.error('Não foi possível salvar o progresso de leitura', error))
       }
+      persistRef.current = persist
+      percentageForCfiRef.current = percentageForCfi
 
       // Only once the reader has left the page holding the saved position: a
       // relayout moves where that page *starts* without the reader moving,
@@ -1009,6 +1191,10 @@ export default function Reader() {
       rendition.on('relocated', (location: Location) => {
         resolveFirstRelocation?.()
         resolveFirstRelocation = undefined
+        const current = checkpointRef.current
+        if (current.status !== 'idle') {
+          dispatchCheckpointRef.current({ type: 'relocated', showsOrigin: locationContains(location, current.origin.cfi) })
+        }
         setActiveTocId(computeActiveTocId(rendition, book, tocRef.current, location.start.href))
 
         const computedPercentage = percentageForCfi(location.start.cfi)
@@ -1057,7 +1243,7 @@ export default function Reader() {
         canPageRef.current = true
       }
 
-      // If locationsBook finishes generating after the initial display, the
+      // If the locations are ready only after the initial display, the
       // relocated event above had nothing to compute percentage from yet.
       // Recompute it now for the screen and for the saved position (its CFI
       // untouched) — reading positions directly, not re-calling
@@ -1071,6 +1257,11 @@ export default function Reader() {
         const percentage = position?.cfi ? percentageForCfi(position.cfi) : undefined
         if (position?.cfi && percentage !== undefined && percentage !== position.percentage) {
           persist(position.cfi, percentage)
+        }
+        const current = checkpointRef.current
+        if (current.status !== 'idle' && current.origin.percentage === undefined) {
+          const originPercentage = percentageForCfi(current.origin.cfi)
+          if (originPercentage !== undefined) dispatchCheckpointRef.current({ type: 'percentageReady', percentage: originPercentage })
         }
       })
 
@@ -1090,13 +1281,17 @@ export default function Reader() {
     return () => {
       cancelled = true
       persistCurrentLocationRef.current()
+      dispatchCheckpointRef.current({ type: 'close' })
+      persistRef.current = () => {}
+      percentageForCfiRef.current = () => undefined
       persistCurrentLocationRef.current = () => {}
       resettleRef.current = () => {}
       canPageRef.current = false
       renditionRef.current?.destroy()
       bookRef.current?.destroy()
-      // locationsBook is deliberately not destroyed here: destroying it
-      // while its own generate() is still mid-flight is the same crash this
+      // The locations Book (books imported before prepareEpub) is
+      // deliberately not destroyed here: destroying it while its own
+      // generate() is still mid-flight is the same crash this
       // whole separate-Book approach exists to avoid. It's unused after
       // `cancelled` flips, so it just finishes generating in the background
       // and gets garbage-collected once nothing references it anymore.
@@ -1149,6 +1344,15 @@ export default function Reader() {
     return () => observer.disconnect()
   }, [])
 
+  // The margins, the side buttons and the touch surface; the book's own
+  // iframe gets the same handler in open() (wheel events don't cross documents).
+  useEffect(() => {
+    const row = bookRowRef.current
+    if (!row) return
+    row.addEventListener('wheel', onWheel, { passive: false })
+    return () => row.removeEventListener('wheel', onWheel)
+  }, [onWheel])
+
   // On a phone, closing the app is the page going hidden, after which it may
   // be killed with no further event. pagehide covers closing a desktop tab.
   useEffect(() => {
@@ -1187,7 +1391,7 @@ export default function Reader() {
           setPopover(null)
           return
         }
-        if (forwardTapToLink(viewer, clientX, clientY)) return
+        if (forwardTapToLink(viewer, clientX, clientY, followLinkRef.current)) return
         const tappedHighlight = renditionRef.current
           ? highlightAtPoint(renditionRef.current, clientX, clientY)
           : undefined
@@ -1332,23 +1536,138 @@ export default function Reader() {
     const applied = appliedThemeRef.current
     if (applied && applied.rendition === rendition && applied.theme === activeTheme) return
     appliedThemeRef.current = { rendition, theme: activeTheme }
-    applyTheme(rendition, activeTheme)
+    applyTheme(rendition, activeTheme, fontScaleRef.current)
+    const css = linkStylesheet(activeTheme)
+    for (const contents of rendition.getContents() as unknown as Contents[]) {
+      if (contents.document) applyLinkStyles(contents.document, css)
+    }
     resettleRef.current()
   }, [activeTheme, loading])
 
-  // TOC entries and search results usually open another section, which has
-  // the same reflow-after-positioning problem as restoring on open. The final
-  // flush covers a settle that needed no re-display, where the last saved
-  // relocation predates the reflow.
-  const navigateTo = useCallback((target: string) => {
+  const originNow = useCallback((): Origin | undefined => {
     const rendition = renditionRef.current
-    if (!rendition) return
-    rendition
-      .display(target)
-      .then(() => settleAt(rendition, target))
-      .then(() => persistCurrentLocationRef.current())
-      .catch(console.error)
+    if (!rendition) return undefined
+    const anchor = positionRef.current?.cfi
+    const onScreen = currentLocationOf(rendition)
+    const cfi = anchor && locationContains(onScreen, anchor) ? anchor : onScreen?.start?.cfi
+    if (!cfi) return undefined
+    const book = bookRef.current
+    return {
+      cfi,
+      percentage: percentageForCfiRef.current(cfi) ?? positionRef.current?.percentage,
+      chapterLabel: book ? chapterLabelForCfi(book, tocRef.current, cfi) : undefined,
+    }
   }, [])
+
+  // TOC entries, search results, annotations, links and Home/End: a jump,
+  // which leaves a way back (checkpoint.ts). Going back to it is a jump too,
+  // without one. Re-seeks after a relayout call display() directly and never
+  // come through here. The final flush covers a settle that needed no
+  // re-display, where the last saved relocation predates the reflow.
+  const navigateTo = useCallback(
+    (target: string, options: { checkpoint?: boolean } = {}) => {
+      const rendition = renditionRef.current
+      if (!rendition) return
+      const origin = options.checkpoint ? originNow() : undefined
+      if (origin) dispatchCheckpointRef.current({ type: 'jump', origin })
+      rendition
+        .display(target)
+        .then(() => settleAt(rendition, target))
+        .then(() => {
+          const current = checkpointRef.current
+          if (origin && current.status !== 'idle') {
+            dispatchCheckpointRef.current({
+              type: 'jumpSettled',
+              showsOrigin: locationContains(currentLocationOf(rendition), current.origin.cfi),
+            })
+          }
+          persistCurrentLocationRef.current()
+        })
+        .catch((error) => {
+          if (origin) dispatchCheckpointRef.current({ type: 'jumpFailed' })
+          console.error(error)
+        })
+    },
+    [originNow]
+  )
+
+  // Every link in the book goes through here — epub.js's own onclick runs no
+  // settleAt and leaves no way back, and never runs at all in WebKit, whose
+  // sandboxed book iframe runs no scripts. External links open from the app's
+  // document: the sandbox has no allow-popups, so from inside the book they
+  // did nothing.
+  const followLink = useCallback(
+    (link: HTMLAnchorElement, doc: Document) => {
+      const raw = link.getAttribute('href')
+      const book = bookRef.current
+      if (!raw || !book) return
+      if (isExternalHref(raw)) {
+        window.open(link.href, '_blank', 'noopener')
+        return
+      }
+      let url: URL
+      try {
+        url = new URL(raw, doc.querySelector('base')?.getAttribute('href') ?? doc.baseURI)
+      } catch {
+        return
+      }
+      navigateTo(resolveTocHref(book, book.path.relative(url.pathname) + url.hash), { checkpoint: true })
+    },
+    [navigateTo]
+  )
+
+  const dispatchCheckpoint = useCallback(
+    (event: CheckpointEvent) => {
+      const { state, effects } = stepCheckpoint(checkpointRef.current, event)
+      checkpointRef.current = state
+      setCheckpoint(state)
+      for (const effect of effects) {
+        switch (effect.type) {
+          case 'pushGuard':
+            navigate(`/read/${bookId}`, { state: { checkpointGuard: true } })
+            break
+          case 'popGuard':
+            appHistoryChangeRef.current = true
+            navigate(-1)
+            break
+          case 'goTo':
+            navigateToRef.current(effect.cfi)
+            break
+          case 'saveCurrent': {
+            const position = positionRef.current
+            if (position?.cfi) persistRef.current(position.cfi, position.percentage)
+            break
+          }
+        }
+      }
+    },
+    [navigate, bookId]
+  )
+
+  useEffect(() => {
+    dispatchCheckpointRef.current = dispatchCheckpoint
+    navigateToRef.current = navigateTo
+    followLinkRef.current = followLink
+  }, [dispatchCheckpoint, navigateTo, followLink])
+
+  // The guard entry pushed when a return point became active: the system Back
+  // (Android, Alt+←) pops it, which is the cue to go back to the origin. One
+  // left over without a return point (a reload on it, or Forward) is dropped
+  // rather than replaced, so no duplicate reader entry is left behind.
+  useEffect(() => {
+    const hasGuard = (location.state as { checkpointGuard?: boolean } | null)?.checkpointGuard === true
+    if (appHistoryChangeRef.current) {
+      appHistoryChangeRef.current = false
+      return
+    }
+    const { status } = checkpointRef.current
+    if (hasGuard && status !== 'active') {
+      appHistoryChangeRef.current = true
+      navigate(-1)
+    } else if (!hasGuard && status === 'active') {
+      dispatchCheckpointRef.current({ type: 'systemBack' })
+    }
+  }, [location, navigate])
 
   // Scans every section of the book for `query`, independently of whatever
   // the rendition currently has displayed. Runs against searchBookRef, a
@@ -1563,6 +1882,35 @@ export default function Reader() {
     barsHidden && 'invisible opacity-0'
   )
 
+  // Back through history when the reader was opened from inside the app (a
+  // push of "/" left [/, /read/x, /], and the system Back then reopened the
+  // book), skipping the guard entry; replaced when the reader is the first
+  // entry (direct link, reload in the installed app). React Router's data
+  // router keeps the entry's index in history.state.idx.
+  function leaveReader() {
+    const index = (window.history.state as { idx?: number } | null)?.idx ?? 0
+    const guard = checkpointRef.current.status === 'active' ? 1 : 0
+    if (index - guard >= 1) navigate(-(1 + guard))
+    else navigate('/', { replace: true })
+  }
+
+  const returnPoint = checkpoint.status === 'active' ? checkpoint.origin : undefined
+  const link = linkColor(activeTheme)
+  const returnButton = (className: string, withChapter?: boolean) =>
+    returnPoint && (
+      <ReturnButton
+        origin={returnPoint}
+        color={link}
+        background={themeTint(activeTheme, 8)}
+        withChapter={withChapter}
+        onBack={() => dispatchCheckpoint({ type: 'back' })}
+        onDismiss={() => dispatchCheckpoint({ type: 'dismiss' })}
+        className={className}
+      />
+    )
+
+  if (missing) return <Navigate to="/" replace />
+
   return (
     // h-dvh, not h-screen: 100vh on iOS measures the viewport as if the
     // browser's toolbars were hidden, so the reader ended up taller than the
@@ -1594,7 +1942,7 @@ export default function Reader() {
             aria-label="Voltar para a biblioteca"
             title="Voltar para a biblioteca"
             className="max-sm:size-11"
-            onClick={() => navigate('/')}
+            onClick={leaveReader}
           >
             <ArrowLeft />
           </Button>
@@ -1629,6 +1977,7 @@ export default function Reader() {
           )}
         </span>
         <div className="flex items-center justify-end gap-1 sm:gap-2">
+          {returnButton('hidden h-8 sm:inline-flex', true)}
           {percentage !== undefined && (
             <span className="hidden px-1 text-sm text-muted-foreground sm:inline">{percentage}%</span>
           )}
@@ -1645,12 +1994,14 @@ export default function Reader() {
               <span className="hidden lg:inline">{isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}</span>
             </Button>
           )}
-          <ReaderSettings />
+          <ReaderSettings onShowShortcuts={() => setShortcutsOpen(true)} />
         </div>
         <ProgressBar
           aria-hidden
           theme={activeTheme}
           percentage={percentage ?? 0}
+          marker={returnPoint?.percentage}
+          markerColor={link}
           className="absolute inset-x-0 -bottom-px hidden h-0.5 sm:block"
         />
       </header>
@@ -1661,17 +2012,30 @@ export default function Reader() {
         activeTocId={activeTocId}
         onNavigate={(href) => {
           const book = bookRef.current
-          if (book) navigateTo(resolveTocHref(book, href))
+          if (book) navigateTo(resolveTocHref(book, href), { checkpoint: true })
         }}
         annotations={annotations}
-        onOpenAnnotation={navigateTo}
+        onOpenAnnotation={(cfi) => navigateTo(cfi, { checkpoint: true })}
         onEditNote={editNote}
       />
       <BookSearch
         open={searchOpen}
         onOpenChange={setSearchOpen}
         onSearch={performSearch}
-        onNavigate={navigateTo}
+        onNavigate={(cfi) => navigateTo(cfi, { checkpoint: true })}
+      />
+      <ShortcutsDialog
+        open={shortcutsOpen}
+        onOpenChange={setShortcutsOpen}
+        style={
+          {
+            background: themeTint(activeTheme, 5),
+            color: activeTheme.textColor,
+            '--foreground': activeTheme.textColor,
+            '--muted-foreground': activeTheme.textColor,
+            '--border': themeTint(activeTheme, 20),
+          } as CSSProperties
+        }
       />
 
       {/* The arrows are flex siblings of the book rather than floating over it:
@@ -1694,7 +2058,21 @@ export default function Reader() {
             className="absolute inset-0 z-10 flex items-center justify-center text-muted-foreground"
             style={{ background: activeTheme.background }}
           >
-            Carregando livro...
+            {fileState === 'falhou' ? (
+              <div className="flex max-w-sm flex-col items-center gap-4 px-6 text-center">
+                <p>
+                  Não foi possível baixar este livro do seu Google Drive. Confira a conexão e tente de
+                  novo.
+                </p>
+                <Button variant="outline" onClick={leaveReader}>
+                  Voltar para a biblioteca
+                </Button>
+              </div>
+            ) : fileState === 'baixando' ? (
+              'Baixando o livro...'
+            ) : (
+              'Carregando livro...'
+            )}
           </div>
         )}
         <button
@@ -1751,7 +2129,8 @@ export default function Reader() {
       <nav
         aria-label="Navegação do livro"
         className={cn(
-          'grid grid-cols-3 items-center border-t px-2 transition-colors duration-200 sm:hidden',
+          'grid items-center border-t px-2 transition-colors duration-200 sm:hidden',
+          returnPoint ? 'grid-cols-[1fr_auto_1fr]' : 'grid-cols-3',
           barsHidden && 'border-transparent'
         )}
       >
@@ -1768,12 +2147,14 @@ export default function Reader() {
           <ProgressBar
             theme={activeTheme}
             percentage={percentage ?? 0}
+            marker={returnPoint?.percentage}
+            markerColor={link}
             className={cn(
               'h-1 w-16 rounded-full transition-[opacity,visibility] duration-200',
               barsHidden && 'invisible opacity-0'
             )}
           />
-          <span>{percentage ?? 0}%</span>
+          {returnButton('h-11') ?? <span>{percentage ?? 0}%</span>}
         </div>
         <button type="button" onClick={() => setSearchOpen(true)} className={bottomBarButtonClass}>
           <Search className="size-5" />

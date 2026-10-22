@@ -1,5 +1,5 @@
 // Generates the EPUB 3 fixture used to exercise the reader: a PNG cover, eight
-// chapters with enough prose to paginate over many screens, and a nested table
+// chapters plus a notes section, links of every shape the reader handles, with enough prose to paginate over many screens, and a nested table
 // of contents whose entries point at in-chapter anchors (which is what the
 // current-chapter detection compares CFIs against).
 //
@@ -138,6 +138,14 @@ const PARAGRAPHS_PER_SECTION = 9
 const TITLE = 'O Relógio Parado da Sala'
 const AUTHOR = 'Joana Vieira'
 
+// Chapter 1 carries every link shape the reader handles: plain cross-reference,
+// EPUB 3 noteref, the older <sup><a>, a link around an image and an external one.
+function linksBlock() {
+  return `    <p>Este capítulo tem links para testar o leitor: veja o <a href="cap3.xhtml#sec-3-2">trecho 3.2</a>, a nota longa<a epub:type="noteref" href="notas.xhtml#n1" id="ref-n1"><sup>1</sup></a>, a nota antiga<sup><a href="notas.xhtml#n2" id="ref-n2">2</a></sup> e o <a href="https://example.com/">site externo</a>.</p>
+    <p><a href="cap2.xhtml"><img src="figura.png" alt="Figura que leva ao capítulo 2" /></a></p>
+`
+}
+
 function chapterXhtml(n) {
   const sections = Array.from({ length: SECTIONS_PER_CHAPTER }, (_, s) => {
     const index = s + 1
@@ -150,35 +158,71 @@ function chapterXhtml(n) {
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="pt-BR" lang="pt-BR">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="pt-BR" lang="pt-BR">
   <head>
     <title>Capítulo ${n}</title>
     <meta charset="utf-8" />
+    <link rel="stylesheet" type="text/css" href="estilo.css" />
   </head>
   <body>
     <h1>Capítulo ${n}</h1>
-${sections}
+${n === 1 ? linksBlock() : ''}${sections}
   </body>
 </html>
 `
 }
+
+// The long note spans more than one page on a phone, which is the case the
+// return button must survive (turning pages inside the note keeps it).
+function notesXhtml() {
+  const longNote = Array.from({ length: 14 }, (_, i) => `      <p>${paragraph(900 + i)}</p>`).join('\n')
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="pt-BR" lang="pt-BR">
+  <head>
+    <title>Notas</title>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" type="text/css" href="estilo.css" />
+  </head>
+  <body>
+    <h1 id="notas">Notas</h1>
+    <aside epub:type="footnote" id="n1">
+      <p><a href="cap1.xhtml#ref-n1">&#8617;</a> 1. Uma nota longa, de várias páginas.</p>
+${longNote}
+    </aside>
+    <aside epub:type="footnote" id="n2">
+      <p><a href="cap1.xhtml#ref-n2">&#8617;</a> 2. Uma nota curta.</p>
+    </aside>
+  </body>
+</html>
+`
+}
+
+// The book's own link styling, which the reader theme has to beat: the import
+// sanitizer drops `color`, but `text-decoration: none` survives it.
+const STYLESHEET = `a { color: #0000cc; text-decoration: none; }
+img { max-width: 100%; }
+`
 
 /* -------------------------------------------------------------- assembly */
 
 const manifestItems = [
   '    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
   '    <item id="cover-image" href="capa.png" media-type="image/png" properties="cover-image"/>',
+  '    <item id="figura" href="figura.png" media-type="image/png"/>',
+  '    <item id="estilo" href="estilo.css" media-type="text/css"/>',
   ...Array.from(
     { length: CHAPTER_COUNT },
     (_, i) =>
       `    <item id="cap${i + 1}" href="cap${i + 1}.xhtml" media-type="application/xhtml+xml"/>`
   ),
+  '    <item id="notas" href="notas.xhtml" media-type="application/xhtml+xml"/>',
 ].join('\n')
 
-const spineItems = Array.from(
-  { length: CHAPTER_COUNT },
-  (_, i) => `    <itemref idref="cap${i + 1}"/>`
-).join('\n')
+const spineItems = [
+  ...Array.from({ length: CHAPTER_COUNT }, (_, i) => `    <itemref idref="cap${i + 1}"/>`),
+  '    <itemref idref="notas"/>',
+].join('\n')
 
 const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0">
@@ -228,6 +272,7 @@ const navXhtml = `<?xml version="1.0" encoding="UTF-8"?>
       <h1>Sumário</h1>
       <ol>
 ${navEntries}
+      <li><a href="notas.xhtml#notas">Notas</a></li>
       </ol>
     </nav>
   </body>
@@ -254,6 +299,9 @@ zip.file('OEBPS/capa.png', makeCoverPng())
 for (let n = 1; n <= CHAPTER_COUNT; n++) {
   zip.file(`OEBPS/cap${n}.xhtml`, chapterXhtml(n))
 }
+zip.file('OEBPS/notas.xhtml', notesXhtml())
+zip.file('OEBPS/estilo.css', STYLESHEET)
+zip.file('OEBPS/figura.png', makeCoverPng(300, 180))
 
 // Stamp the fixed date on every entry after the fact rather than per file:
 // JSZip also creates directory entries implicitly (META-INF/, OEBPS/) as a
@@ -276,4 +324,4 @@ writeFileSync(OUT_FILE, buffer)
 const paragraphCount = CHAPTER_COUNT * SECTIONS_PER_CHAPTER * PARAGRAPHS_PER_SECTION
 console.log(`gerado: ${OUT_FILE}`)
 console.log(`tamanho: ${(buffer.length / 1024).toFixed(1)} KB`)
-console.log(`${CHAPTER_COUNT} capítulos, ${SECTIONS_PER_CHAPTER} seções cada, ${paragraphCount} parágrafos`)
+console.log(`${CHAPTER_COUNT} capítulos, ${SECTIONS_PER_CHAPTER} seções cada, ${paragraphCount} parágrafos + notas`)

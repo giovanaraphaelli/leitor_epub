@@ -7,9 +7,15 @@ import { router } from '@/routes'
 import { useThemeStore } from '@/store/theme-store'
 import { useReadingPrefsStore } from '@/store/reading-prefs-store'
 import { initDebug } from '@/lib/debug-log'
+import { migrateLibraryAtBoot } from '@/lib/boot-migration'
 
 // Before the awaits below, so a failure while the app starts is in the trail.
 initDebug()
+
+// Before anything reads the library: books used to have random ids, and each
+// one is rewritten once under an id derived from its content (see
+// migrate-ids.ts). Draws a message only on the launch that has work to do.
+await migrateLibraryAtBoot(document.getElementById('root')!)
 
 // Awaited before the first render (not fired off in parallel with it): the
 // reader applies the active theme before its first `display()` to avoid a

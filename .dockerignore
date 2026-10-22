@@ -1,0 +1,10 @@
+.git
+.claude
+.scratch
+node_modules
+dist
+docs
+fixtures
+scripts
+.env*
+*.local

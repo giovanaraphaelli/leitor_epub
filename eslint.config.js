@@ -27,4 +27,11 @@ export default tseslint.config(
       'react-refresh/only-export-components': 'off',
     },
   },
+  {
+    // The login server runs on Node, not in the browser.
+    files: ['server/**/*.ts'],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
 )

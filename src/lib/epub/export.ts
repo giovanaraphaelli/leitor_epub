@@ -1,4 +1,4 @@
-import type { Book } from '@/lib/db/schema'
+import type { Book, BookWithFile } from '@/lib/db/schema'
 
 // Characters Windows, macOS or Android refuse in a file name.
 const UNSAFE_IN_FILE_NAME = /[\\/:*?"<>|\p{Cc}]/gu
@@ -13,7 +13,7 @@ export function exportFileName(book: Pick<Book, 'title' | 'author'>): string {
 // the Kindle app (Send to Kindle) are, and a plain download from an app
 // installed to the home screen has nowhere visible to go on iOS. Elsewhere,
 // a regular download. Called straight from the click — share() requires it.
-export async function exportBook(book: Book): Promise<void> {
+export async function exportBook(book: BookWithFile): Promise<void> {
   const file = new File([book.fileBlob], exportFileName(book), { type: 'application/epub+zip' })
   const touch = window.matchMedia('(pointer: coarse)').matches
   if (touch && navigator.canShare?.({ files: [file] })) {

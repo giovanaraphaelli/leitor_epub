@@ -100,7 +100,7 @@ export async function loadImage(image: Blob): Promise<HTMLImageElement> {
 
 /* ------------------------------------------------------------- package */
 
-async function assertNotProtected(zip: JSZip) {
+export async function assertNotProtected(zip: JSZip) {
   // rights.xml: Adobe's license; sinf.xml: Apple's.
   if (zip.file('META-INF/rights.xml') || zip.file('META-INF/sinf.xml')) throw new ProtectedEpubError()
   const encryption = await zip.file('META-INF/encryption.xml')?.async('string')
@@ -111,7 +111,7 @@ async function assertNotProtected(zip: JSZip) {
   }
 }
 
-async function loadPackage(zip: JSZip) {
+export async function loadPackage(zip: JSZip) {
   const container = await zip.file('META-INF/container.xml')?.async('string')
   const opfPath = container && parseXml(container).getElementsByTagNameNS('*', 'rootfile')[0]?.getAttribute('full-path')
   const opfText = opfPath && (await zip.file(opfPath)?.async('string'))
@@ -386,7 +386,7 @@ function serializeXml(doc: Document, original: string): string {
 }
 
 // Hrefs are relative to the document holding them and may be URL-encoded.
-function resolvePath(fromFile: string, href: string): string {
+export function resolvePath(fromFile: string, href: string): string {
   const parts = fromFile.split('/').slice(0, -1)
   for (const segment of decodeURIComponent(href.split('#')[0]).split('/')) {
     if (segment === '..') parts.pop()
@@ -411,7 +411,7 @@ function uniqueId(opf: Document, id: string): string {
 
 // The spec requires mimetype as the first entry, stored uncompressed — the
 // Kindle conversion rejects files that get this wrong.
-async function repack(zip: JSZip, changed: Map<string, string | Blob>): Promise<Blob> {
+export async function repack(zip: JSZip, changed: Map<string, string | Blob>): Promise<Blob> {
   const out = new JSZip()
   out.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
   for (const entry of Object.values(zip.files)) {

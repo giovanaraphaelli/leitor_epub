@@ -112,10 +112,36 @@ for (const idref of spine) {
   }
 }
 
+// 8. every internal link inside the chapters resolves, anchors included — the
+// same silent failure as a broken TOC entry, but from inside the text.
+let chapterLinksChecked = 0
+for (const idref of spine) {
+  if (!manifest.has(idref)) continue
+  const chapterHref = manifest.get(idref).href
+  const chapterDir = chapterHref.includes('/') ? chapterHref.slice(0, chapterHref.lastIndexOf('/') + 1) : ''
+  const contents = await zip.file(opfDir + chapterHref).async('string')
+  for (const match of contents.matchAll(/<a\s[^>]*href="([^"]+)"/g)) {
+    const href = match[1]
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href)) continue
+    const [file, fragment] = href.split('#')
+    const targetPath = file ? opfDir + chapterDir + file : opfDir + chapterHref
+    const entry = zip.file(targetPath)
+    chapterLinksChecked++
+    if (!entry) {
+      problems.push(`${idref}: link para arquivo inexistente: ${href}`)
+      continue
+    }
+    if (fragment && !(await entry.async('string')).includes(`id="${fragment}"`)) {
+      problems.push(`${idref}: link para âncora inexistente: ${href}`)
+    }
+  }
+}
+
 console.log(`arquivo: ${target}`)
 console.log(`entradas no zip: ${entryNames.length}`)
 console.log(`capítulos na spine: ${spine.length}`)
 console.log(`links no sumário: ${links.length} (${anchorsChecked} com âncora, todas conferidas)`)
+console.log(`links nos capítulos: ${chapterLinksChecked} (todos conferidos)`)
 reportAndExit()
 
 function reportAndExit() {

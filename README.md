@@ -1,4 +1,4 @@
-# Leitor EPUB
+# E-books
 
 Leitor de EPUB pessoal, feito para rodar no navegador: você sobe seus próprios arquivos `.epub`, o app lembra onde você parou em cada livro e permite customizar a aparência da leitura (cores, tipografia, espaçamento) do seu jeito.
 
@@ -24,11 +24,11 @@ Leitor de EPUB pessoal, feito para rodar no navegador: você sobe seus próprios
 | UI                 | React + TypeScript + Vite                        |
 | Estilo/componentes | Tailwind CSS + shadcn/ui                         |
 | Renderização EPUB  | epub.js                                          |
-| Persistência       | IndexedDB via Dexie.js (100% local no navegador) |
+| Persistência       | IndexedDB via Dexie.js (no navegador; com o Google Drive conectado, também no Drive da pessoa) |
 | Estado global      | Zustand                                          |
 | Roteamento         | React Router                                     |
 
-Não há backend: cada pessoa que usa o app tem seus livros e progresso guardados localmente no próprio navegador. Isso significa que os dados não sincronizam entre dispositivos diferentes, mas também que nenhum arquivo sai da máquina do usuário.
+Não há backend de dados: cada pessoa que usa o app tem seus livros e progresso guardados no próprio navegador. Quem conecta o Google Drive (opcional) sincroniza livros, progresso e grifos entre os seus aparelhos por uma pasta no próprio Drive; os arquivos vão do navegador direto para o Drive, sem passar por servidor nosso. O único servidor do app (`server/`) cuida só do login do Google.
 
 Mais detalhes de arquitetura em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -44,6 +44,53 @@ No iPhone, o app da Tela de Início guarda os dados separado do navegador: livro
 npm install
 npm run dev
 ```
+
+O `npm run dev` sobe só o app (Vite, em `http://localhost:5173`), sem o login do Google: o botão do Drive fica escondido e tudo o mais funciona. Para testar o Drive, gere o build e suba o servidor, que serve o app e as rotas `/api/auth/*`:
+
+```bash
+npm run build
+npm start
+```
+
+O servidor abre em `http://localhost:3000` e lê as variáveis de `.env.local`.
+
+## Variáveis de ambiente
+
+Só o servidor (`server/`) usa variáveis, e todas são do login do Google Drive. Copie o modelo e preencha:
+
+```bash
+cp .env.example .env.local
+```
+
+| Variável | O que é |
+| --- | --- |
+| `GOOGLE_CLIENT_ID` | Client ID do OAuth (tipo "Aplicativo da Web") |
+| `GOOGLE_CLIENT_SECRET` | O segredo desse Client ID. Fica só no servidor |
+| `COOKIE_SECRET` | 32 bytes aleatórios em base64, que cifram o cookie do login. Gere com `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
+| `OAUTH_ALLOWED_ORIGINS` | Origens de onde o app é aberto, exatas, sem barra no fim e separadas por vírgula (ex.: `http://localhost:3000,https://seu-dominio.com`) |
+| `PORT` | Opcional, a porta do servidor (padrão `3000`) |
+
+Se faltar qualquer uma das quatro primeiras, o servidor avisa no log ("Login do Google Drive desligado") e continua servindo o app, só sem o Drive.
+
+**Configurar no Google Cloud:**
+
+1. Crie um projeto no [Google Cloud Console](https://console.cloud.google.com/) e ative a **Google Drive API**.
+2. Configure a **tela de consentimento OAuth**:
+   - nome do app "E-books";
+   - o link da política de privacidade (`<origem>/privacy`);
+   - o escopo `.../auth/drive.file`, que dá acesso só aos arquivos que o próprio app cria.
+
+   Enquanto o app estiver em modo de teste, só os e-mails cadastrados como usuários de teste conseguem entrar.
+3. Em **Credenciais**, crie um **ID do cliente OAuth** do tipo "Aplicativo da Web":
+   - em "Origens JavaScript autorizadas", ponha cada origem de `OAUTH_ALLOWED_ORIGINS`;
+   - em "URIs de redirecionamento autorizados", ponha `<origem>/api/auth/callback` para cada uma (ex.: `http://localhost:3000/api/auth/callback`).
+4. Copie o Client ID e o segredo para o `.env.local`.
+
+**Em produção** (Coolify ou qualquer host Node):
+- o comando de build é `npm run build` e o de start é `npm start`;
+- cadastre as mesmas variáveis como variáveis de execução do app, com a origem de produção (em HTTPS) em `OAUTH_ALLOWED_ORIGINS` e no Client ID.
+
+Num host só estático, como o Vercel, não há servidor, e o app roda sem o Drive.
 
 ## Roadmap
 
@@ -77,7 +124,7 @@ npm run dev
 - [x] **Selecionar texto e grifar** — toque longo (celular) ou mouse seleciona; no celular a seleção é a do próprio sistema, com os pins para ajustar; um cartão perto do trecho oferece Copiar e Grifar, e tocar num grifo abre Remover. Uma cor só; os grifos ficam numa tabela do IndexedDB (`highlights`, por CFI), repintados ao abrir o livro, acompanham mudanças de fonte e largura e são apagados junto com o livro. Verificado em Chrome emulando celular, exceto a seleção do sistema, que só se vê no aparelho; **falta confirmar no Android e no iPhone** (o toque longo selecionando, os pins e se o painel do Touch to Search do Chrome cobre o cartão).
 - [x] **Anotações no livro aberto** — aba Anotações no painel do Sumário, com os grifos em ordem de leitura levando ao trecho, e uma nota por grifo (pelo cartão do grifo, pelo "grifar com nota" e pela lista).
 - [ ] **Grifos e anotações, o restante** — várias cores, marcadores de página, exportar anotações (Markdown), uma tela com as anotações e os favoritos de todos os livros, dicionário (tradução da palavra selecionada; a definir API externa ou dicionário offline) e compartilhar o trecho como imagem.
-- [ ] **Backup e sincronização entre aparelhos** — hoje livros, progresso, temas e preferências ficam só no IndexedDB do navegador: limpar os dados do site apaga a biblioteca inteira, e nada passa de um aparelho para outro. Em etapas, sem backend próprio: (1) pedir armazenamento persistente (`navigator.storage.persist()`), para o navegador não apagar os dados sozinho quando faltar espaço — não protege contra a limpeza manual; (2) exportar e importar um backup (progresso, grifos, temas e preferências, com os livros opcionais) num arquivo que a pessoa guarda onde quiser; (3) sincronizar com o Google Drive da própria pessoa, livros incluídos, via login Google no navegador e escopo restrito (`drive.file`, numa pasta "Leitor EPUB" visível no Drive dela). Decidido: cada livro ganha na importação um ID fixo, o hash SHA-256 dos bytes originais (`crypto.subtle.digest`), calculado uma vez e guardado — recalcular não serve, porque editar título/autor/capa regrava o arquivo (`EditBookDialog`); é por esse ID que progresso e grifos se ligam ao livro em outro aparelho ou ao reimportar o mesmo arquivo. O arquivo vai do aparelho da pessoa para o Drive dela sem passar por servidor nosso: o app não hospeda nem distribui livros, e compartilhar livros entre pessoas fica de fora. Notas técnicas: o IndexedDB continua sendo a fonte principal e o app segue funcionando offline; o progresso resolve conflito pelo `lastReadAt`; grifos apagados precisam de marca de exclusão, senão voltam do outro aparelho; o token do login só no navegador dura cerca de 1 h e não tem refresh token, então o app pede autorização de novo de vez em quando; login por popup no app instalado no iPhone costuma dar trabalho — testar cedo. Configuração: projeto no Google Cloud, OAuth Client ID (Web) com as origens autorizadas (localhost e o domínio de produção) e tela de consentimento; em modo de teste, só os e-mails cadastrados entram.
+- [ ] **Backup e sincronização entre aparelhos** — sem o Google Drive conectado, livros, progresso, temas e preferências ficam só no IndexedDB do navegador, e limpar os dados do site apaga a biblioteca inteira; com ele, livros, progresso e grifos já passam de um aparelho para outro (ao abrir a biblioteca, depois de importar, editar ou remover, e no botão de sincronizar do cabeçalho), e faltam a parte automática e desconectar com limpeza. Em etapas, sem backend próprio: (1) pedir armazenamento persistente (`navigator.storage.persist()`), para o navegador não apagar os dados sozinho quando faltar espaço — não protege contra a limpeza manual; (2) exportar e importar um backup (progresso, grifos, temas e preferências, com os livros opcionais) num arquivo que a pessoa guarda onde quiser; (3) sincronizar com o Google Drive da própria pessoa, livros incluídos, via login Google no navegador e escopo restrito (`drive.file`, numa pasta "MyBooks" visível no Drive dela). Decidido: cada livro ganha na importação um ID fixo, o hash SHA-256 do conteúdo (a lista de arquivos do EPUB, sem folhas de estilo nem `mimetype`, lida do diretório central do zip: ver `bookIdFor`), calculado uma vez e guardado — os bytes do arquivo guardado não servem, porque a importação reescreve as folhas de estilo e editar título/autor/capa regrava o arquivo (`EditBookDialog`); é por esse ID que progresso e grifos se ligam ao livro em outro aparelho ou ao reimportar o mesmo arquivo. O arquivo vai do aparelho da pessoa para o Drive dela sem passar por servidor nosso: o app não hospeda nem distribui livros, e compartilhar livros entre pessoas fica de fora. Notas técnicas: o IndexedDB continua sendo a fonte principal e o app segue funcionando offline; o progresso resolve conflito pelo `lastReadAt`; grifos apagados precisam de marca de exclusão, senão voltam do outro aparelho; o login fica guardado por um servidor pequeno (`server/`), que renova o acesso sem pedir autorização de novo e nunca vê os livros. Configuração: projeto no Google Cloud, OAuth Client ID (Web) com as origens autorizadas (localhost e o domínio de produção) e tela de consentimento; em modo de teste, só os e-mails cadastrados entram.
 
 #### Onde paramos
 

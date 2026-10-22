@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import CoverImage from "@/components/CoverImage";
 import { updateBook } from "@/lib/db/books";
-import type { Book } from "@/lib/db/schema";
+import type { BookWithFile } from "@/lib/db/schema";
 import {
   ProtectedEpubError,
   editBookInfo,
@@ -35,7 +35,8 @@ export default function EditBookDialog({
   onSaved,
   style,
 }: {
-  book: Book;
+  // Only a book whose file is on this device: the edit rewrites the file.
+  book: BookWithFile;
   open: boolean;
   onClose: () => void;
   onSaved: () => void;
